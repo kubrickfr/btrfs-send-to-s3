@@ -50,7 +50,7 @@ It's a complex and dangerous topic on which we provide no guidance, we merely su
 # Making a backup
 
 ## RSA Key pair generation
-Google it, and don't do it on the same machine.
+Look it up using your favourite search engine, and don't do it on the same machine.
 
 ## Non-RSA Keys:
 Worried about Qantum Supremacy? PRs welcomed!
@@ -66,3 +66,24 @@ You can use it to achieve different goals by using multiple epochs in parallel o
 * You have a monthly incremental backup on Glacier Deep Archive, with an new full backup (and a new epoch) every year, and a daily backup on S3 Standard with a new epoch every month. In that case you would, for example, have always two active epochs, with names like monthly-glacier-<year> and daily-standard-<month>
 
 When you start a new epoch, the backup script will *not* delete the last snapshot of the previous epoch (as there is no link between epochs) neither on S3 nor on the btrfs filesystem. It is your creative responsibility to decide how you want to handle this.
+
+# Restoring a backup
+
+## Glacier considerations
+Before restoring an incremental backup that is on Glacier, the files must first be copied to S3 Standard, this is neither trivial nor instant (or free for that matter), and should be considered carefully before choosing a storage class.
+
+We recommend using an S3 batch operation for this, again you can look it up, but this is a good starting point: https://community.aws/tutorials/s3-batch-operations-restore
+
+## Disk space consideration
+Standard behaviour when restoring a backup is that all the data from every snapshot will be restored, including files that have been deleted in later snapshots. This may very well exceed the space that is available on your machine. You can use the `-d` option to mitigate this, if you don't need do go back to a particular point in time.
+
+## Bandwidth consideration
+If your target machine is outside of AWS, you will incur Data Transfer Out (DTO) charges, and just like mentioned above, you will download and restore every bid of data ever saved on this subvolume, including files that have been deleted later in the sequence.
+
+It _may_ make financial sense (and even reduce the restoration times), to use an EC2 instance with sufficient local storage (*not* EBS) in the same region as your S3 backup.
+
+You would restore all the backup increments on that machine, and then do one big `btrfs send` via the network of the final result, which should be smaller if files have been deleted between snapshots (piping `btrfs send` into `socat` with encryption is your friend).
+
+NB: DTO from S3 to EC2 in the same region is free, consider using a VPC endpoint as well. DTO from EC2 to a machine outside AWS is the same as DTO from S3 to outside AWS. Please double-check on the relevant AWS pricing pages.
+
+As usual, calculations to see if this makes sense are left to the reader.
