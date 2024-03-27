@@ -5,17 +5,16 @@ if [ "$EUID" -ne 0 ]
   exit
 fi
 
-umask 0600
 DELETE_PREVIOUS=false
 CHUNK_SIZE="512M"
 
-OPTSTRING="k:b:p:e:c:s:S:d"
+OPTSTRING="r:b:p:e:c:s:S:d"
 
 while getopts ${OPTSTRING} opt; do
   case ${opt} in
-    k)
-      echo "Public Key pem file: ${OPTARG}"
-      PUBLIC_KEY=${OPTARG}
+    r)
+      echo "Recipients file path: ${OPTARG}"
+      RECIPIENTS_FILE=${OPTARG}
       ;;
     b)
       echo "Bucket: ${OPTARG}"
@@ -52,10 +51,11 @@ while getopts ${OPTSTRING} opt; do
   esac
 done
 
-if [ "" == "$PUBLIC_KEY" ] || [ "" == "$BUCKET" ] || [ "" == "$PREFIX" ] || [ "" == "$EPOCH" ] || [ "" == "$SCLASS" ] || [ "" == "$SUBV" ]; then
+if [ "" == "$RECIPIENTS_FILE" ] || [ "" == "$BUCKET" ] || [ "" == "$PREFIX" ] || [ "" == "$EPOCH" ] || [ "" == "$SCLASS" ] || [ "" == "$SUBV" ]; then
 cat << EOF
 Usage:
-  -k path     : path to the public key file in PEM format
+  -r path     : path to recipients file in age format
+                see https://github.com/FiloSottile/age
   -b name     : S3 bucket name where to store the backup
   -p prefix   : a prefix to use in that bucket, use name of the
                 machine you want to backup for example
@@ -76,6 +76,12 @@ EOF
         exit 1
 fi
 
+function cleanup () {
+  echo "Something went wrong, attempting to clean-up temporary files & snapshots" >&2
+  btrfs subvolume delete ${NEW_SNAPSHOT}
+  exit 2
+}
+
 aws s3 ls s3://${BUCKET}/${PREFIX} >> /dev/null \
   && echo "SECURITY WARNING: current AWS IAM entity is allowed to list bucket contents! This can allow an attacker using the same identity to overwrite files and ruin your backups!" >&2
 
@@ -93,42 +99,33 @@ if [ -z "${SUBV_PREFIX}" ]; then
 fi
 
 SNAPSHOTS=$(echo "${SUBV_INFO}" | grep -o "${SUBV_PREFIX}/.stream_backup_${EPOCH}.*")
+NEW_SNAPSHOT=${SUBV}/.stream_backup_${EPOCH}/${SEQ}
 
 if [ -z "${SNAPSHOTS}" ]; then
   echo "No previous snapshot found for this epoch; making a full backup" >&2
   mkdir ${SUBV}/.stream_backup_${EPOCH}/ || true
   DELETE_PREVIOUS=false
-  BTRFS_COMMAND="btrfs send ${SUBV}/.stream_backup_${EPOCH}/${SEQ}"
+  BTRFS_COMMAND="btrfs send ${NEW_SNAPSHOT}"
 else
   LAST_SNAPSHOT=$(echo "${SNAPSHOTS}" | tail -n1)
-  BTRFS_COMMAND="btrfs send -p ${SUBV%%${SUBV_PREFIX}*}${LAST_SNAPSHOT} ${SUBV}/.stream_backup_${EPOCH}/${SEQ}"
+  BTRFS_COMMAND="btrfs send -p ${SUBV%%${SUBV_PREFIX}*}${LAST_SNAPSHOT} ${NEW_SNAPSHOT}"
 fi
 
-function cleanup () {
-  echo "Something went wrong, attempting to clean-up temporary files & snapshots" >&2
-  btrfs subvolume delete ${SUBV}/.stream_backup_${EPOCH}/${SEQ}
-  rm /tmp/btrfs_sess_key.dat
-  exit 2
-}
-
-btrfs subvolume snapshot -r ${SUBV} ${SUBV}/.stream_backup_${EPOCH}/${SEQ}
+btrfs subvolume snapshot -r ${SUBV} ${NEW_SNAPSHOT}
 
 trap cleanup ERR
 trap cleanup INT
-
-openssl rand 32 > /tmp/btrfs_sess_key.dat
 
 eval ${BTRFS_COMMAND} \
 	| lz4 \
 	| mbuffer -m ${CHUNK_SIZE} -q \
 	| split -b ${CHUNK_SIZE} --suffix-length 4 --filter \
-	"openssl enc -aes-256-cbc -salt -md sha512 -pbkdf2 -pass file:/tmp/btrfs_sess_key.dat | aws s3 cp - s3://${BUCKET}/${PREFIX}/${EPOCH}/${SEQ_SALTED}/\$FILE --storage-class ${SCLASS}"
+	"age -R ${RECIPIENTS_FILE} | aws s3 cp - s3://${BUCKET}/${PREFIX}/${EPOCH}/${SEQ_SALTED}/\$FILE --storage-class ${SCLASS}"
 
-# We only write the key to S3 at the end, as a marker of completion of the backup
-openssl pkeyutl -encrypt -inkey ${PUBLIC_KEY} -pubin -in /tmp/btrfs_sess_key.dat \
-  | aws s3 cp - s3://${BUCKET}/${PREFIX}/${EPOCH}/${SEQ_SALTED}/btrfs_sess_key_enc.dat
-
-rm /tmp/btrfs_sess_key.dat
+# We only write the subvolume information to S3 at the end, as a marker of completion of the backup
+btrfs subvolume show ${NEW_SNAPSHOT} \
+  | age -R ${RECIPIENTS_FILE} \
+  | aws s3 cp - s3://${BUCKET}/${PREFIX}/${EPOCH}/${SEQ_SALTED}/snapshot_info.dat
 
 if [ "${DELETE_PREVIOUS}" == true ]; then
   btrfs subvolume delete ${SUBV%%${SUBV_PREFIX}*}${LAST_SNAPSHOT}

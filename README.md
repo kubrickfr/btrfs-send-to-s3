@@ -10,7 +10,7 @@ These scripts rely on well known command line tools and the AWS CLI:
 * lz4
 * split
 * sed
-* openssl
+* age (or [rage](https://github.com/str4d/rage/) symlinked to `age` binary in PATH)
 * btrfs-tools
 
 # Design
@@ -37,9 +37,9 @@ You need to test your backups! Especially after system upgrades or updates to th
 You need to be made aware if your backups fail! Check if the backup script has a non-zero return value, and send an alert in that case.
 
 ## Encryption key
-The backup script encrypts your data using aes-256-cbc, using a key that is randomly generated at each run. This session key is encrypted using an public RSA PEM key that you must provide. Do *not* put the private key on the same machine, in fact you should generate it on a different machine and store it securely. Key management is left to the user (that's you!).
+The backup script encrypts your data using [age](https://github.com/FiloSottile/age), please refer to their documentation on how to create key pairs. Do *not* put the private key on the same machine, in fact you should generate it on a different machine and store it securely. Key management is left to the user (that's you!).
 
-If you lose the private key (or forgot it's passphrase or whatever), your backup will be rendered completely useless.
+If you lose the private key, your backup will be rendered completely useless.
 
 ## Beware of long chains of incremental backups!
 A chain is only as strong as its weakest link. If there is any corruption in an incremental backup, you will not be able to restore your file beyond that point! _See epochs below_ as a tool to handle this
@@ -49,12 +49,6 @@ It's a complex and dangerous topic on which we provide no guidance, we merely su
 
 # Making a backup
 
-## RSA Key pair generation
-Look it up using your favourite search engine, and don't do it on the same machine.
-
-## Non-RSA Keys:
-Worried about Qantum Supremacy? PRs welcomed!
-
 ## How to use the commands?
 Run them without any argument and a summary of command line parameters will be displayed.
 
@@ -63,7 +57,7 @@ It's an arbitrary string that you use to identify a backup sequence that starts 
 
 You can use it to achieve different goals by using multiple epochs in parallel or in sequence, for example:
 * You do a backup daily and a new full backup every 6 months, so you start a new epoch every 6 months
-* You have a monthly incremental backup on Glacier Deep Archive, with an new full backup (and a new epoch) every year, and a daily backup on S3 Standard with a new epoch every month. In that case you would, for example, have always two active epochs, with names like monthly-glacier-<year> and daily-standard-<month>
+* You have a monthly incremental backup on Glacier Deep Archive, with an new full backup (and a new epoch) every year, and a daily backup on S3 Standard with a new epoch every month. In that case you would, for example, have always two active epochs, with names like monthly-glacier-_year_ and daily-standard-_month_
 
 When you start a new epoch, the backup script will *not* delete the last snapshot of the previous epoch (as there is no link between epochs) neither on S3 nor on the btrfs filesystem. It is your creative responsibility to decide how you want to handle this.
 
@@ -73,6 +67,9 @@ When you start a new epoch, the backup script will *not* delete the last snapsho
 Before restoring an incremental backup that is on Glacier, the files must first be copied to S3 Standard, this is neither trivial nor instant (or free for that matter), and should be considered carefully before choosing a storage class.
 
 We recommend using an S3 batch operation for this, again you can look it up, but this is a good starting point: https://community.aws/tutorials/s3-batch-operations-restore
+
+### Deleting backups on glacier
+Beware of the minimum storage duration and [pro-rated charge equal to the storage charge for the remaining days](https://aws.amazon.com/s3/pricing/)!
 
 ## Disk space consideration
 Standard behaviour when restoring a backup is that all the data from every snapshot will be restored, including files that have been deleted in later snapshots. This may very well exceed the space that is available on your machine. You can use the `-d` option to mitigate this, if you don't need do go back to a particular point in time.
