@@ -7,8 +7,9 @@ fi
 
 DELETE_PREVIOUS=false
 CHUNK_SIZE="512M"
+SOURCE_EPOCH=""
 
-OPTSTRING="r:b:p:e:c:s:S:d"
+OPTSTRING="r:b:p:e:c:s:B:S:d"
 
 while getopts ${OPTSTRING} opt; do
   case ${opt} in
@@ -35,6 +36,10 @@ while getopts ${OPTSTRING} opt; do
     s)
       echo "Subvolume to backup: ${OPTARG}"
       SUBV=${OPTARG}
+      ;;
+    B)
+      echo "Branch from epoch: ${OPTARG}"
+      SOURCE_EPOCH=${OPTARG}
       ;;
     S)
       echo "Chunks size: ${OPTARG}"
@@ -67,6 +72,9 @@ Usage:
                 supported classes
   -s path     : path of the subvolume to make a shapshot and backup
                 of
+  [-B epoch]  : use as a starting point when starting a new epoch.
+                This is useful to break long chains of incremental
+                backups into epochs of different periodicity
   [-S size]   : size of chunks to send to S3. Default to 512M
                 K,M,G suffixes are supported
   [-d]        : when the upload succeedes, delete the older snapshot
@@ -101,9 +109,15 @@ fi
 SNAPSHOTS=$(echo "${SUBV_INFO}" | grep -o "${SUBV_PREFIX}/.stream_backup_${EPOCH}.*")
 NEW_SNAPSHOT=${SUBV}/.stream_backup_${EPOCH}/${SEQ}
 
+if [ -z "${SNAPSHOTS}" ] && [ ! -z "${SOURCE_EPOCH}" ]; then
+  SNAPSHOTS=$(echo "${SUBV_INFO}" | grep -o "${SUBV_PREFIX}/.stream_backup_${SOURCE_EPOCH}.*")
+  if [ -z ${SNAPSHOTS} ]; then
+    echo "ERROR: Neither the current epoch nor the branch epoch has an existing snapshot" >&2
+    exit 1
+  fi
+fi
 if [ -z "${SNAPSHOTS}" ]; then
-  echo "No previous snapshot found for this epoch; making a full backup" >&2
-  mkdir ${SUBV}/.stream_backup_${EPOCH}/ || true
+  echo "No previous snapshot found for this epoch; making a full backup"
   DELETE_PREVIOUS=false
   BTRFS_COMMAND="btrfs send ${NEW_SNAPSHOT}"
 else
@@ -111,6 +125,7 @@ else
   BTRFS_COMMAND="btrfs send -p ${SUBV%%${SUBV_PREFIX}*}${LAST_SNAPSHOT} ${NEW_SNAPSHOT}"
 fi
 
+mkdir ${SUBV}/.stream_backup_${EPOCH}/ || true
 btrfs subvolume snapshot -r ${SUBV} ${NEW_SNAPSHOT}
 
 trap cleanup ERR
@@ -123,6 +138,7 @@ eval ${BTRFS_COMMAND} \
 	"age -R ${RECIPIENTS_FILE} | aws s3 cp - s3://${BUCKET}/${PREFIX}/${EPOCH}/${SEQ_SALTED}/\$FILE --storage-class ${SCLASS}"
 
 # We only write the subvolume information to S3 at the end, as a marker of completion of the backup
+# having the subvolume information might help debuging tricky situations
 btrfs subvolume show ${NEW_SNAPSHOT} \
   | age -R ${RECIPIENTS_FILE} \
   | aws s3 cp - s3://${BUCKET}/${PREFIX}/${EPOCH}/${SEQ_SALTED}/snapshot_info.dat

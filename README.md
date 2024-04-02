@@ -55,11 +55,20 @@ Run them without any argument and a summary of command line parameters will be d
 ## What is an epoch?
 It's an arbitrary string that you use to identify a backup sequence that starts with a full, non-incremental backup.
 
+When you start a new epoch, the backup script will *not* delete the last snapshot of the previous epoch (as there is no link between epochs) neither on S3 nor on the btrfs filesystem. It is your creative responsibility to decide how you want to handle this.
+
 You can use it to achieve different goals by using multiple epochs in parallel or in sequence, for example:
 * You do a backup daily and a new full backup every 6 months, so you start a new epoch every 6 months
 * You have a monthly incremental backup on Glacier Deep Archive, with an new full backup (and a new epoch) every year, and a daily backup on S3 Standard with a new epoch every month. In that case you would, for example, have always two active epochs, with names like monthly-glacier-_year_ and daily-standard-_month_
+* You can branch your epochs, consider for example this crontab (boring mandatory parameters replaced with \[...\] for clarity):
 
-When you start a new epoch, the backup script will *not* delete the last snapshot of the previous epoch (as there is no link between epochs) neither on S3 nor on the btrfs filesystem. It is your creative responsibility to decide how you want to handle this.
+```
+0 3   1   1-9  * stream_backup [...] -c DEEP_ARCHIVE -e monthly-$(date +%Y)
+0 3   1  10-12 * stream_backup [...] -c GLACIER      -e monthly-$(date +%Y)
+0 3 2-31   *   * stream_backup [...] -c STANDARD_IA  -e daily-$(date +%Y-%m) -B monthly-$(date +%Y)
+```
+
+This way you have daily backups, but a maximum chain lenth of 12+30=42 incremental backups instead of 365. We also mix and match storage classes, so that when we start the new year and delete the old epochs, we don't waste too much money on the 180 days of minimum storage duration for Glacier Deep Archive.
 
 # Restoring a backup
 
@@ -84,3 +93,7 @@ You would restore all the backup increments on that machine, and then do one big
 NB: DTO from S3 to EC2 in the same region is free, consider using a VPC endpoint as well. DTO from EC2 to a machine outside AWS is the same as DTO from S3 to outside AWS. Please double-check on the relevant AWS pricing pages.
 
 As usual, calculations to see if this makes sense are left to the reader.
+
+## Branched backups
+To restore a branch backup, you just restore the branches in order of precedence. For example, on the 18th of March 2024, to restore the latest backup made with the crontab above, one would, after the restoration from Glacier to S3 is completed, first restore epoch monthly-2024 and then daily-2024-03.
+This will bring back the full backup of the 1st of January 2024, then the two monthy increments in February and March, and finally every daily increment since the 2nd of March.
