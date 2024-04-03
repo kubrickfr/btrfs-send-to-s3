@@ -83,7 +83,7 @@ for SEQ_PREFIX in $(aws s3api list-objects-v2 --bucket ${BUCKET} --prefix ${PREF
         aws s3 cp s3://${BUCKET}/${key} - | age -d -i ${IDENTITY_FILE}
       fi
     done | mbuffer -m 1G -q | lz4 -d | btrfs receive ${DEST}
-    if [ "${PREV_SEQ}" != "" ]; then
+    if [ "${DELETE_PREVIOUS}" == true ] && [ ! -z "${PREV_SEQ}" ]; then
       echo "Deleting previous snapshot ${DEST}/${PREV_SEQ}"
       sudo btrfs subvolume delete ${DEST}/${PREV_SEQ}
     fi
