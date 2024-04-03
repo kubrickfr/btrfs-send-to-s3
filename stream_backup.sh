@@ -127,7 +127,7 @@ btrfs subvolume show ${NEW_SNAPSHOT} \
   | age -R ${RECIPIENTS_FILE} \
   | aws s3 cp - s3://${BUCKET}/${PREFIX}/${EPOCH}/${SEQ_SALTED}/snapshot_info.dat
 
-if [ "${DELETE_PREVIOUS}" == true ]; then
+if [ "${DELETE_PREVIOUS}" == true ] && [ ! -z "${LAST_SNAPSHOT}" ]; then
   btrfs subvolume delete ${SUBV%%${SUBV_PREFIX}*}${LAST_SNAPSHOT}
 fi
 
