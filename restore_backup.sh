@@ -5,6 +5,8 @@ if [ "$EUID" -ne 0 ]
   exit
 fi
 
+./check_deps.sh || exit 3
+
 DELETE_PREVIOUS=false
 
 OPTSTRING="b:p:e:i:s:d"
