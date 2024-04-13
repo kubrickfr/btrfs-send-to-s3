@@ -5,7 +5,7 @@ if [ "$EUID" -ne 0 ]
   exit 1
 fi
 
-./check_deps.sh || exit 3
+$(dirname "$0")/check_deps.sh || exit 3
 
 DELETE_PREVIOUS=false
 
