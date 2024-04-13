@@ -8,6 +8,7 @@ fi
 DELETE_PREVIOUS=false
 CHUNK_SIZE="512M"
 SOURCE_EPOCH=""
+SNAPSHOT_FROM_OTHER_EPOCH=false
 
 OPTSTRING="r:b:p:e:c:s:B:S:d"
 
@@ -114,6 +115,8 @@ if [ -z "${SNAPSHOTS}" ] && [ ! -z "${SOURCE_EPOCH}" ]; then
   if [ -z ${SNAPSHOTS} ]; then
     echo "ERROR: Neither the current epoch nor the branch epoch has an existing snapshot" >&2
     exit 1
+  else
+    SNAPSHOT_FROM_OTHER_EPOCH=true
   fi
 fi
 if [ -z "${SNAPSHOTS}" ]; then
@@ -143,7 +146,13 @@ btrfs subvolume show ${NEW_SNAPSHOT} \
   | age -R ${RECIPIENTS_FILE} \
   | aws s3 cp - s3://${BUCKET}/${PREFIX}/${EPOCH}/${SEQ_SALTED}/snapshot_info.dat
 
-if [ "${DELETE_PREVIOUS}" == true ] && [ ! -z "${LAST_SNAPSHOT}" ]; then
+# We delete the snapshot from which we made an incremental backup:
+# * If the user asked for it
+# * If there is a previous snapshot in the first place
+# * If the snapshot is not from another epoch
+if     [ "${DELETE_PREVIOUS}" == true ] \
+    && [ ! -z "${LAST_SNAPSHOT}" ] \
+    && [ ${SNAPSHOT_FROM_OTHER_EPOCH} == false ]; then
   btrfs subvolume delete ${SUBV%%${SUBV_PREFIX}*}${LAST_SNAPSHOT}
 fi
 
