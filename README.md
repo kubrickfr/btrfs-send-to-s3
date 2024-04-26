@@ -18,6 +18,15 @@ Rather than dealing with the complexity of custom file formats and metadata file
 
 As such if you want to change the format (compression, encryption, file container, etc.), please start a new backup _epoch_ so as not to mix the two.
 
+# Return value
+
+It is important that you check the return value of the back-up script for proper monitoring and alerting.
+
+* 0: everything went fine
+* 1: a "usage" error occured. You used a unrecognised command switch, or referenced a volume or snapshot that does not exist
+* 2: an error occurred after the snapshot was created, **you should pay close attention to these**! The script will have tried to delete the newly created snapshot so that subsequent incremental backups can be made from the last good known state
+* 3: a required dependency is not installed
+
 # Important security recommendations
 This is all rather common sense, but:
 

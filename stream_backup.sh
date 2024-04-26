@@ -2,8 +2,10 @@
 #
 if [ "$EUID" -ne 0 ]
   then echo "Please run as root"
-  exit
+  exit 1
 fi
+
+$(dirname "$0")/check_deps.sh || exit 3
 
 DELETE_PREVIOUS=false
 CHUNK_SIZE="512M"
@@ -91,7 +93,7 @@ function cleanup () {
   exit 2
 }
 
-aws s3 ls s3://${BUCKET}/${PREFIX} >> /dev/null \
+aws s3 ls s3://${BUCKET}/${PREFIX} >/dev/null 2>&1 \
   && echo "SECURITY WARNING: current AWS IAM entity is allowed to list bucket contents! This can allow an attacker using the same identity to overwrite files and ruin your backups!" >&2
 
 SEQ=$(date +%s)
