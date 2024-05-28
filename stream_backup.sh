@@ -131,7 +131,7 @@ else
 fi
 
 mkdir ${SUBV}/.stream_backup_${EPOCH}/ || true
-btrfs subvolume snapshot -r ${SUBV} ${NEW_SNAPSHOT}
+btrfs subvolume snapshot -r ${SUBV} ${NEW_SNAPSHOT} || exit 1
 
 trap cleanup ERR
 trap cleanup INT
@@ -140,13 +140,21 @@ eval ${BTRFS_COMMAND} \
 	| lz4 \
 	| mbuffer -m ${CHUNK_SIZE} -q \
 	| split -b ${CHUNK_SIZE} --suffix-length 4 --filter \
-	"age -R ${RECIPIENTS_FILE} | aws s3 cp - s3://${BUCKET}/${PREFIX}/${EPOCH}/${SEQ_SALTED}/\$FILE --storage-class ${SCLASS}"
+	"age -R ${RECIPIENTS_FILE} | aws s3 cp - s3://${BUCKET}/${PREFIX}/${EPOCH}/${SEQ_SALTED}/\$FILE --storage-class ${SCLASS}; exit \${PIPESTATUS}"
+
+if [ "${PIPESTATUS}" != "0" ]; then
+  cleanup
+fi
 
 # We only write the subvolume information to S3 at the end, as a marker of completion of the backup
 # having the subvolume information might help debuging tricky situations
 btrfs subvolume show ${NEW_SNAPSHOT} \
   | age -R ${RECIPIENTS_FILE} \
   | aws s3 cp - s3://${BUCKET}/${PREFIX}/${EPOCH}/${SEQ_SALTED}/snapshot_info.dat
+
+if [ "${PIPESTATUS}" != "0" ]; then
+  cleanup
+fi
 
 # We delete the snapshot from which we made an incremental backup:
 # * If the user asked for it
