@@ -142,6 +142,10 @@ eval ${BTRFS_COMMAND} \
 	| split -b ${CHUNK_SIZE} --suffix-length 4 --filter \
 	"age -R ${RECIPIENTS_FILE} | aws s3 cp - s3://${BUCKET}/${PREFIX}/${EPOCH}/${SEQ_SALTED}/\$FILE --storage-class ${SCLASS}; exit \${PIPESTATUS}"
 
+if [ "${PIPESTATUS}" != "0" ]; then
+  cleanup
+fi
+
 # We only write the subvolume information to S3 at the end, as a marker of completion of the backup
 # having the subvolume information might help debuging tricky situations
 btrfs subvolume show ${NEW_SNAPSHOT} \
