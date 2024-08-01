@@ -130,13 +130,13 @@ else
   BTRFS_COMMAND="btrfs send -p ${SUBV%%${SUBV_PREFIX}*}${LAST_SNAPSHOT} ${NEW_SNAPSHOT}"
 fi
 
-mkdir ${SUBV}/.stream_backup_${EPOCH}/ || true
+mkdir ${SUBV}/.stream_backup_${EPOCH}/ 2>&1 || true
 btrfs subvolume snapshot -r ${SUBV} ${NEW_SNAPSHOT} || exit 1
 
 trap cleanup ERR
 trap cleanup INT
 
-eval ${BTRFS_COMMAND} \
+eval ${BTRFS_COMMAND} 2>&1 \
 	| lz4 \
 	| mbuffer -m ${CHUNK_SIZE} -q \
 	| split -b ${CHUNK_SIZE} --suffix-length 4 --filter \
