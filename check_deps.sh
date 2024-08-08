@@ -28,3 +28,8 @@ if ! command -v btrfs &> /dev/null; then
   echo "command not found: btrfs"
   exit 3
 fi
+
+if [ "$(basename $SHELL)" != "bash" ]
+  then echo "Please run in bash"
+  exit 1
+fi
