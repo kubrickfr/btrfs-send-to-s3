@@ -1,0 +1,160 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation template for Lambda function that manages S3 lifecycle policies'
+
+Parameters:
+  BucketName:
+    Type: String
+    Description: Name of the S3 bucket to manage lifecycle policies
+
+  BucketPrefix:
+    Type: String
+    Description: Prefix for the S3 bucket paths
+
+Resources:
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: S3LifecycleManagement
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetLifecycleConfiguration
+                  - s3:PutLifecycleConfiguration
+                Resource: !Sub arn:aws:s3:::${BucketName}
+
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: btrfs-send-to-s3-cleanup
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          const { S3Client, PutBucketLifecycleConfigurationCommand } = require("@aws-sdk/client-s3");
+
+          const client = new S3Client({});
+
+          const formatDate = (date) => {
+            const year = date.getFullYear();
+            const month = (date.getMonth() + 1).toString().padStart(2, '0');
+            return { year, month };
+          };
+
+          const createExpirationRule = (prefix, date, id) => ({
+            Expiration: { Date: date },
+            ID: id,
+            Filter: { Prefix: prefix },
+            Status: "Enabled"
+          });
+
+          exports.handler = async (event) => {
+            const now = new Date();
+            const { year, month } = formatDate(now);
+            const isJanuary = now.getMonth() === 0;
+
+            const nextExpiration = new Date(now.getFullYear(), now.getMonth() + 1, 4);
+
+            const LCPolicy = {
+              Bucket: process.env.BUCKET,
+              LifecycleConfiguration: {
+                Rules: [
+                  createExpirationRule(
+                    `${process.env.PREFIX}/daily-${year}-${month}/`,
+                    nextExpiration,
+                    `Expire-Daily-${year}-${month}`
+                  )
+                ]
+              }
+            };
+
+            if (isJanuary) {
+              LCPolicy.LifecycleConfiguration.Rules.push(
+                createExpirationRule(
+                  `${process.env.PREFIX}/monthly-${year-1}/`,
+                  nextExpiration,
+                  `Expire-Monthly-${year-1}`
+                )
+              );
+            }
+
+            console.log(JSON.stringify(LCPolicy));
+            const response = await client.send(
+              new PutBucketLifecycleConfigurationCommand(LCPolicy)
+            );
+
+            return {
+              statusCode: 200,
+              body: JSON.stringify(response)
+            };
+          };
+
+      Environment:
+        Variables:
+          BUCKET: !Ref BucketName
+          PREFIX: !Ref BucketPrefix
+      Timeout: 5
+      MemorySize: 128
+
+  EventBridgeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeLambda
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !GetAtt LambdaFunction.Arn
+
+  EventBridgeRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: triggerBtrfsSendToS3LCPolictCreation
+      Description: 'Trigger Lambda function to update S3 lifecycle policies'
+      ScheduleExpression: 'cron(7 5 10 * ? *)'
+      State: ENABLED
+      Targets:
+        - Id: LambdaTarget
+          Arn: !GetAtt LambdaFunction.Arn
+
+  LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref LambdaFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt EventBridgeRule.Arn
+
+Outputs:
+  LambdaFunctionArn:
+    Description: ARN of the created Lambda function
+    Value: !GetAtt LambdaFunction.Arn
+  EventBridgeRuleArn:
+    Description: ARN of the created EventBridge rule
+    Value: !GetAtt EventBridgeRule.Arn
