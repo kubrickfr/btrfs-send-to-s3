@@ -132,6 +132,35 @@ Resources:
                   - lambda:InvokeFunction
                 Resource: !GetAtt LambdaFunction.Arn
 
+  BulkRetrievalRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - batchoperations.s3.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: AllowRestoreFromGlacier
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:RestoreObject
+                Resource: !Sub arn:aws:s3:::${BucketName}/${BucketPrefix}
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                Resource: !Sub arn:aws:s3:::${BucketName}/${BucketPrefix}/restore/*
+
   EventBridgeRule:
     Type: AWS::Events::Rule
     Properties:
@@ -158,3 +187,6 @@ Outputs:
   EventBridgeRuleArn:
     Description: ARN of the created EventBridge rule
     Value: !GetAtt EventBridgeRule.Arn
+  BulkRetrievalRoleArn:
+    Description: IAM role to use for bulk retrieval operations
+    Value: !GetAtt BulkRetrievalRole.Arn
