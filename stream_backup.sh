@@ -136,7 +136,7 @@ btrfs subvolume snapshot -r ${SUBV} ${NEW_SNAPSHOT} || exit 1
 trap cleanup ERR
 trap cleanup INT
 
-eval ${BTRFS_COMMAND} 2>&1 \
+eval ${BTRFS_COMMAND} 2>/dev/null \
 	| lz4 \
 	| mbuffer -m ${CHUNK_SIZE} -q \
 	| split -b ${CHUNK_SIZE} --suffix-length 4 --filter \
