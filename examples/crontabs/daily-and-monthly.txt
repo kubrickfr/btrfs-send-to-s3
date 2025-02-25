@@ -1,0 +1,42 @@
+# Crontab to take daily and monthly snapshot taking advantage of the branched
+# feature so that the maximum chain lenth is 12+30=42 on December 31st.
+# It tries to optimize the cost of storage assuming you delete old epochs on
+# the 4th of each month, taking into account early deletion fees.
+# It also assumes that none of these operations take more than 24h and that
+# 2100GMT is the beginning of your "quiet" hours.
+
+#
+# You if you rely on emails to monitor failures, you could wrap all these
+# commands with https://habilis.net/cronic/ to avoid sending emails on success
+#
+
+BUCKET=your-s3-bucket-name
+PREFIX=s3-prefix-to-identify-backup-in-bucket
+SUBVOLUME=/path/to/mounted/btrfs/subvolume
+
+# .---------------- minute (0 - 59)
+# |  .------------- hour (0 - 23)
+# |  |  .---------- day of month (1 - 31)
+# |  |  |  .------- month (1 - 12) OR jan,feb,mar,apr ...
+# |  |  |  |  .---- day of week (0 - 6) (Sunday=0 or 7) OR sun,mon,tue,wed,thu,fri,sat
+# |  |  |  |  |
+
+# Do a montly scrub, towards the end of the month
+0 21 27    *   *  btrfs scrub start -B /mnt/BIG/
+
+# Every month, perform an incremental backup relative to the previous month.
+# In January, it will start a new epoch automatically
+0 1   1    *   * ./btrfs-send-to-s3/stream_backup.sh -r ./btrfs-send-to-s3/recipient.txt -b ${BUCKET} -p ${PREFIX} -s ${SUBVOLUME}/ -d -c DEEP_ARCHIVE -e monthly-$(date +\%Y)
+# On January 1st, get rid of last year's snapshot
+1 0   1    1   * btrfs subvolume delete ${SUBVOLUME}/.stream_backup_monthly-$(date -d '-1 day' +\%Y)/* && rmdir ${SUBVOLUME}/.stream_backup_monthly-$(date -d '-1 day' +\%Y)
+
+# Every day (except the first day of the month, as we take a montly snapshot on
+# that day), perform an incremental backup relative to the previous day. On the
+# second day of the month, it will start a new epoch automatically, branched from
+# the current monthly backup taken the day before
+# Until the 18th, use STANDARD_IA, then use STANDARD, as we won't keep the
+# STANDARD_IA snapshots around for long enough to justify the early deletion fees.
+0 1 2-18   *   * ./btrfs-send-to-s3/stream_backup.sh -r ./btrfs-send-to-s3/recipient.txt -b ${BUCKET} -p ${PREFIX} -s ${SUBVOLUME}/ -d -c STANDARD_IA -e daily-$(date +\%Y-\%m) -B monthly-$(date +\%Y)
+0 1 19-31  *   * ./btrfs-send-to-s3/stream_backup.sh -r ./btrfs-send-to-s3/recipient.txt -b ${BUCKET} -p ${PREFIX} -s ${SUBVOLUME}/ -d -c STANDARD -e daily-$(date +\%Y-\%m) -B monthly-$(date +\%Y)
+# On the 1st of each month, get rid of last month's snapshot
+0 0   1    *   * btrfs subvolume delete ${SUBVOLUME}/.stream_backup_daily-$(date -d '-1 day' +\%Y-\%m)/* && rmdir ${SUBVOLUME}/.stream_backup_daily-$(date -d '-1 day' +\%Y-\%m)
