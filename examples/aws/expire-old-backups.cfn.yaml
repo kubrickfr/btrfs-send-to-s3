@@ -152,8 +152,11 @@ Resources:
               - Effect: Allow
                 Action:
                   - s3:RestoreObject
-                Resource: !Sub arn:aws:s3:::${BucketName}/${BucketPrefix}
-            Statement:
+                Resource: !Sub arn:aws:s3:::${BucketName}/${BucketPrefix}/*
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource: !Sub arn:aws:s3:::${BucketName}
               - Effect: Allow
                 Action:
                   - s3:GetObject
