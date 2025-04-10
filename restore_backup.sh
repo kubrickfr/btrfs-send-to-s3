@@ -80,9 +80,12 @@ for SEQ_PREFIX in $(aws s3api list-objects-v2 --bucket ${BUCKET} --prefix ${PREF
     This can also be due to an unexpedcted file being present in the S3 bucket.
     However, if the next snapshot depends on this one, this is the end of it." >&2
   else
-    for key in $(aws s3api list-objects-v2 --bucket ${BUCKET} --prefix ${SEQ_PREFIX} --no-paginate --query 'Contents[].Key' --output  text); do
+    for key in ${SEQ_PREFIX}x{a..z}{a..z}{a..z}{a..z}; do
       if [[ ${key} =~ /x[a-z]*$ ]]; then
         aws s3 cp s3://${BUCKET}/${key} - | age -d -i ${IDENTITY_FILE}
+        if [ "${PIPESTATUS}" != "0" ]; then
+          break
+        fi
       fi
     done | mbuffer -m 1G -q | lz4 -d | btrfs receive ${DEST}
     if [ "${DELETE_PREVIOUS}" == true ] && [ ! -z "${PREV_SEQ}" ]; then
