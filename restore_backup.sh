@@ -82,6 +82,10 @@ for SEQ_PREFIX in $(aws s3api list-objects-v2 --bucket ${BUCKET} --prefix ${PREF
   else
     for key in ${SEQ_PREFIX}x{a..z}{a..z}{a..z}{a..z}; do
       if [[ ${key} =~ /x[a-z]*$ ]]; then
+        aws s3api head-object --bucket ${BUCKET} --key ${key}  >/dev/null 2>&1
+        if [[ $? -ne 0 ]]; then
+          break
+        fi
         aws s3 cp s3://${BUCKET}/${key} - | age -d -i ${IDENTITY_FILE}
         if [ "${PIPESTATUS}" != "0" ]; then
           break
