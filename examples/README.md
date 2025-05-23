@@ -38,7 +38,7 @@ Assuming an already set `AWS_PROFILE` and `AWS_DEFAULT_REGION` environment varia
 export BUCKET="mybucketname"
 export PREFIX="my/prefix"
 export STORAGE_CLASS="DEEP_ARCHIVE"
-aws s3api list-objects-v2 --bucket $BUCKET --prefix $PREFIX --query "Contents[?StorageClass=='$STORAGE_CLASS']" --output text | awk "{print \"$BUCKET,\"\$2}" > job.csv
+aws s3api list-objects-v2 --bucket $BUCKET --prefix $PREFIX --output json | jq --arg bucket ${BUCKET} -r '.Contents[] | select(.StorageClass == "DEEP_ARCHIVE") | "\"\($bucket)\",\"\(.Key)\""' > job.csv
 ```
 
 This should produce a `job.csv` file that you need to put on the S3 bucket at `s3://$BUCKET/$PREFIX/restore/job.csv`. Make a note of the object's  ETAG (MD5 sum). In theory you can use any bucket and prefix, but the preivous path aligns with the permissions given by the `./aws/expire-old-backups.cfn.yaml` CloudFormation template.
@@ -48,7 +48,7 @@ This should produce a `job.csv` file that you need to put on the S3 bucket at `s
 In the following example, replace:
 * `REGION`, self explanatory
 * `ACCOUNT_ID`, self explanatory
-* `JOB_TIER`, can be `Expedited`, `Standard` or `Bulk` (See [documentation](https://docs.aws.amazon.com/AmazonS3/latest/API/API_RestoreObject.html) and [princing](https://aws.amazon.com/s3/pricing/))
+* `JOB_TIER`, can be `EXPEDITED`, `STANDARD` or `BULK` (See [documentation](https://docs.aws.amazon.com/AmazonS3/latest/API/API_RestoreObject.html) and [princing](https://aws.amazon.com/s3/pricing/))
 * `BUCKET`, self explanatory, *multiple occurences*
 * `PREFIX`, self explanatory, *multiple occurences*
 * `BulkRetrievalRole_ARN`, is an IAM role created by the `./aws/expire-old-backups.cfn.yaml` CloudFormation template
