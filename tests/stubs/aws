@@ -24,6 +24,16 @@ case ${service} in
       cp)
         src=$1
         dst=$2
+        # Never returns, and never reads its input, so the whole pipeline stalls
+        # the way a long upload does. Reports the process group it is running
+        # in, which is the one a test has to signal to imitate a shutdown.
+        if [ "${src}" = "-" ] && [ "${AWS_HANG}" = 1 ]; then
+          if [ -n "${PGID_FILE}" ]; then
+            ps -o pgid= -p $$ | tr -d ' ' >"${PGID_FILE}"
+          fi
+          sleep 300
+          exit 0
+        fi
         if [ "${src}" = "-" ]; then
           key=${dst#s3://}
           bucket=${key%%/*}

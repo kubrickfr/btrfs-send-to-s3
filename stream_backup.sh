@@ -29,6 +29,9 @@ if [ ! -x "${SPLIT_SHELL}" ]; then
 fi
 
 SEND_LOG=""
+SNAPSHOT_STAGED=""
+BACKUP_OK=false
+HOUSEKEEPING_FAILED=false
 DELETE_PREVIOUS=false
 CHUNK_SIZE="512M"
 SOURCE_EPOCH=""
@@ -109,12 +112,38 @@ EOF
         exit 1
 fi
 
-function cleanup () {
-  echo "Something went wrong, attempting to clean-up temporary files & snapshots" >&2
+# Runs however the script ends, including on a signal. A snapshot that is still
+# staged is one whose upload did not finish, and the next run must not be able
+# to chain from it, so it goes.
+function on_exit () {
+  local status=$?
+
+  trap - EXIT ERR INT TERM HUP
+
   if [ -n "${SEND_LOG}" ]; then
     rm -f -- "${SEND_LOG}"
   fi
-  btrfs subvolume delete "${NEW_SNAPSHOT}"
+
+  if [ "${BACKUP_OK}" != true ]; then
+    if [ -n "${SNAPSHOT_STAGED}" ] && [ -e "${SNAPSHOT_STAGED}" ]; then
+      echo "Something went wrong, deleting the snapshot this run created" >&2
+      btrfs subvolume delete "${SNAPSHOT_STAGED}" >&2 \
+        || echo "ERROR: could not delete ${SNAPSHOT_STAGED}, remove it by hand" >&2
+      status=2
+    elif [ "${status}" -eq 0 ]; then
+      status=1
+    fi
+  elif [ "${HOUSEKEEPING_FAILED}" == true ]; then
+    status=4
+  else
+    status=0
+  fi
+
+  exit "${status}"
+}
+
+function on_signal () {
+  echo "ERROR: caught SIG$1, aborting" >&2
   exit 2
 }
 
@@ -162,7 +191,12 @@ if ! btrfs subvolume show "${SUBV}" >/dev/null 2>&1; then
 fi
 
 EPOCH_DIR=${SUBV%/}/.stream_backup_${EPOCH}
+# A snapshot is only moved out of here once its upload has completed, so
+# whatever is left in it is unusable, and being in it is what stops
+# latest_snapshot from ever offering it as a parent.
+STAGE_DIR=${EPOCH_DIR}/.incomplete
 NEW_SNAPSHOT=${EPOCH_DIR}/${SEQ}
+SNAPSHOT_STAGED=${STAGE_DIR}/${SEQ}
 
 PARENT_DIR=${EPOCH_DIR}
 LAST_SNAPSHOT=$(latest_snapshot "${EPOCH_DIR}")
@@ -187,15 +221,29 @@ else
   SEND_ARGS+=(-p "${PARENT_PATH}")
 fi
 
-SEND_ARGS+=("${NEW_SNAPSHOT}")
+SEND_ARGS+=("${SNAPSHOT_STAGED}")
 
-mkdir -p -- "${EPOCH_DIR}"
-btrfs subvolume snapshot -r "${SUBV}" "${NEW_SNAPSHOT}" || exit 1
+trap on_exit EXIT
+trap 'on_signal INT' INT
+trap 'on_signal TERM' TERM
+trap 'on_signal HUP' HUP
+trap 'exit 1' ERR
 
-trap cleanup ERR
-trap cleanup INT
+if [ -d "${STAGE_DIR}" ]; then
+  for ORPHAN in "${STAGE_DIR}"/*; do
+    [ -e "${ORPHAN}" ] || continue
+    echo "WARNING: ${ORPHAN} was left behind by an interrupted backup." >&2
+    echo "         Its sequence in S3 was never completed and cannot be restored," >&2
+    echo "         so it cannot be used as a parent. Deleting it." >&2
+    btrfs subvolume delete "${ORPHAN}" >&2 \
+      || echo "WARNING: could not delete ${ORPHAN}, remove it by hand" >&2
+  done
+fi
 
-SEND_LOG=$(mktemp) || cleanup
+mkdir -p -- "${STAGE_DIR}"
+btrfs subvolume snapshot -r "${SUBV}" "${SNAPSHOT_STAGED}" || exit 1
+
+SEND_LOG=$(mktemp) || exit 2
 
 S3_SEQ_URL="s3://${BUCKET}/${PREFIX}/${EPOCH}/${SEQ_SALTED}"
 export RECIPIENTS_FILE S3_SEQ_URL SCLASS
@@ -212,7 +260,7 @@ then
   echo "ERROR: the backup stream failed (btrfs send=${STATUS[0]} lz4=${STATUS[1]}" \
        "mbuffer=${STATUS[2]} split, age or aws=${STATUS[3]})" >&2
   cat -- "${SEND_LOG}" >&2
-  cleanup
+  exit 2
 fi
 
 rm -f -- "${SEND_LOG}"
@@ -220,11 +268,11 @@ SEND_LOG=""
 
 # We only write the subvolume information to S3 at the end, as a marker of completion of the backup
 # having the subvolume information might help debuging tricky situations.
-SNAPSHOT_INFO=$(btrfs subvolume show "${NEW_SNAPSHOT}")
+SNAPSHOT_INFO=$(btrfs subvolume show "${SNAPSHOT_STAGED}")
 
 if [ -z "${SNAPSHOT_INFO}" ]; then
-  echo "ERROR: btrfs subvolume show ${NEW_SNAPSHOT} returned nothing" >&2
-  cleanup
+  echo "ERROR: btrfs subvolume show ${SNAPSHOT_STAGED} returned nothing" >&2
+  exit 2
 fi
 
 if ! printf '%s\n' "${SNAPSHOT_INFO}" \
@@ -232,16 +280,29 @@ if ! printf '%s\n' "${SNAPSHOT_INFO}" \
   | aws s3 cp - "${S3_SEQ_URL}/snapshot_info.dat"
 then
   echo "ERROR: could not upload the completion marker for ${SEQ_SALTED}" >&2
-  cleanup
+  exit 2
 fi
+
+# The sequence is complete in S3, so this snapshot is now a valid parent for the
+# next run and can leave the staging directory.
+mv -T -- "${SNAPSHOT_STAGED}" "${NEW_SNAPSHOT}"
+BACKUP_OK=true
+trap - ERR
+rmdir -- "${STAGE_DIR}" 2>/dev/null
 
 # We delete the snapshot from which we made an incremental backup:
 # * If the user asked for it
 # * If there is a previous snapshot in the first place
 # * If the snapshot is not from another epoch
+# The backup is already safe in S3 by now, so failing here is not fatal.
 if     [ "${DELETE_PREVIOUS}" == true ] \
     && [ -n "${LAST_SNAPSHOT}" ] \
     && [ ${SNAPSHOT_FROM_OTHER_EPOCH} == false ]; then
-  btrfs subvolume delete "${PARENT_PATH}"
+  if ! btrfs subvolume delete "${PARENT_PATH}"; then
+    echo "WARNING: the backup completed, but the snapshot it was made from" >&2
+    echo "         (${PARENT_PATH}) could not be deleted. Snapshots will pile" >&2
+    echo "         up until this is dealt with." >&2
+    HOUSEKEEPING_FAILED=true
+  fi
 fi
 

@@ -35,7 +35,11 @@ sitting in users' buckets:
    `${SUBV}/.stream_backup_<EPOCH>/` is the next run's `btrfs send -p` parent. A snapshot must never
    become eligible as a parent unless its own upload completed — otherwise restore skips its
    markerless sequence and every later increment fails with "cannot find parent subvolume", while
-   the backups keep reporting success.
+   the backups keep reporting success. This is why a snapshot is taken in
+   `.stream_backup_<EPOCH>/.incomplete/` and moved out only after the completion marker is uploaded:
+   eligibility is expressed by *where* the snapshot is, and the move is a single rename. Its
+   basename never changes, because `btrfs send` puts it in the stream and `btrfs receive` recreates
+   it under that name.
 4. **Stream purity**: stdout of the backup pipeline IS the backup. Diagnostics go to stderr, never
    to the stdout of any pipeline stage. Merging stderr into the stream corrupted real backups once
    already (a130925, reverted in b131551).
@@ -44,8 +48,9 @@ sitting in users' buckets:
    the backup path that needs broader permission; `stream_backup.sh` deliberately *warns* at runtime
    if listing turns out to work.
 6. **Exit codes are a monitoring API**: 0 success, 1 usage error, 2 failure after the snapshot was
-   created, 3 missing dependency. Users alert on these, so keep them stable, document any addition
-   in the README table, and never let a partial failure exit 0.
+   created, 3 missing dependency, 4 the backup succeeded but the tidying up after it did not. Users
+   alert on these, so keep them stable, document any addition in the README table, and never let a
+   partial failure exit 0.
 
 ## Shell facts this code depends on
 

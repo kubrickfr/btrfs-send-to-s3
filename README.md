@@ -19,6 +19,8 @@ Rather than dealing with the complexity of custom file formats and metadata file
 
 As such if you want to change the format (compression, encryption, file container, etc.), please start a new backup _epoch_ so as not to mix the two.
 
+Snapshots live in `.stream_backup_<epoch>/` inside the subvolume, named after the second they were taken in. A new snapshot is created in `.stream_backup_<epoch>/.incomplete/` and only moved next to the others once every chunk *and* the completion marker have reached S3. That is what makes an interrupted backup safe: the next run can only ever chain from a snapshot whose upload finished, because a sequence with no completion marker is skipped when restoring, and anything chained from it could not be restored either. A snapshot found in `.incomplete/` at the start of a run is reported and deleted.
+
 # Return value
 
 It is important that you check the return value of the back-up script for proper monitoring and alerting.
@@ -27,6 +29,7 @@ It is important that you check the return value of the back-up script for proper
 * 1: a "usage" error occured. You used a unrecognised command switch, or referenced a volume or snapshot that does not exist
 * 2: an error occurred after the snapshot was created, **you should pay close attention to these**! The script will have tried to delete the newly created snapshot so that subsequent incremental backups can be made from the last good known state
 * 3: a required dependency is not installed
+* 4: the backup itself completed and is safe in S3, but tidying up afterwards did not. Nothing is at risk and there is nothing to re-run, but snapshots will accumulate on disk until you look into it
 
 # Important security recommendations
 This is all rather common sense, but:
