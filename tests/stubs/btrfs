@@ -67,10 +67,6 @@ case "$1 $2" in
     IFS= read -r stream
     header_read=$?
     cat >/dev/null
-    if [ "${FAIL_STAGE}" = receive ]; then
-      echo "ERROR: cannot find parent subvolume" >&2
-      exit 1
-    fi
     case ${header_read}${stream} in
       0BTRFS-STREAM*) ;;
       *) echo "ERROR: unexpected end of stream" >&2; exit 1 ;;
@@ -78,6 +74,10 @@ case "$1 $2" in
     name=${stream#BTRFS-STREAM subvol=}
     parent=${name#* parent=}
     name=${name%% *}
+    if [ "${FAIL_STAGE}" = receive ] || [ "${FAIL_RECEIVE}" = "${name}" ]; then
+      echo "ERROR: failed to receive ${name}" >&2
+      exit 1
+    fi
     # An incremental stream can only be received if its parent is already here.
     if [ "${parent}" != none ] && [ ! -d "${dest}/${parent}" ]; then
       echo "ERROR: cannot find parent subvolume ${parent}" >&2

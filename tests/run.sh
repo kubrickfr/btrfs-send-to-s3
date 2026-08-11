@@ -44,9 +44,9 @@ setup () {
   echo "AGE-SECRET-KEY-EXAMPLE" >"${WORK}/identity.txt"
   # What cron sets, and therefore what the scripts have to cope with.
   export SHELL=/bin/sh
-  unset FAIL_STAGE FAIL_CHUNK FS_PREFIX AWS_LS_OK AWS_LIST_FAIL AWS_ARCHIVED \
-        AWS_HEAD_ERROR AGE_UNDECRYPTABLE NESTED_SUBVOLS STREAM_BYTES TEST_SALT \
-        TEST_NOW
+  unset FAIL_STAGE FAIL_CHUNK FAIL_RECEIVE FS_PREFIX AWS_LS_OK AWS_LIST_FAIL \
+        AWS_ARCHIVED AWS_HEAD_ERROR AWS_HANG AGE_UNDECRYPTABLE NESTED_SUBVOLS \
+        STREAM_BYTES TEST_SALT TEST_NOW
 }
 
 teardown () {
@@ -580,6 +580,87 @@ test_restore_deletes_previous_snapshots_with_d () {
   return 0
 }
 
+# ------------------------------------------------------- restore: failures
+#
+# Every sequence is an increment on the one before it, so a restore that fails
+# half way has to stop, say so, and leave the last good snapshot alone: that
+# snapshot is the parent the retry will need.
+
+restore_three_sequences () {
+  backup -c STANDARD -e first || return 1
+  TEST_NOW=2 backup -c STANDARD -e first || return 1
+  TEST_NOW=3 backup -c STANDARD -e first || return 1
+  mkdir -p "${WORK}/dest"
+  : >"${LOG}"
+}
+
+test_a_failed_receive_stops_the_restore () {
+  restore_three_sequences || { fail "the backups failed"; return 1; }
+
+  FAIL_RECEIVE=2 restore -e first -s "${WORK}/dest" -d
+  local status=$?
+  assert_status "${status}" 2 || return 1
+  assert_equal "$(grep -c '^RECEIVED: ' "${LOG}")" "1" || return 1
+  # The snapshot that did restore has to survive: it is what the next attempt
+  # will chain from.
+  assert_equal "$(ls "${WORK}/dest")" "1" || return 1
+  assert_contains "$(cat "${WORK}/stdout")" "restored in: ${WORK}/dest/1" || return 1
+  return 0
+}
+
+test_a_chunk_that_will_not_decrypt_stops_the_restore () {
+  backup -c STANDARD -e first || { fail "the first backup failed"; return 1; }
+  TEST_NOW=2 backup -c STANDARD -e first || { fail "the second backup failed"; return 1; }
+  mkdir -p "${WORK}/dest"
+  : >"${LOG}"
+
+  AGE_UNDECRYPTABLE="subvol=2" restore -e first -s "${WORK}/dest"
+  local status=$?
+  assert_status "${status}" 2 || return 1
+  assert_equal "$(grep -c '^RECEIVED: ' "${LOG}")" "1" || return 1
+  return 0
+}
+
+# head-object answers 200 for an object still in Glacier, which is easily
+# mistaken for a chunk that is simply not there.
+test_an_archived_chunk_is_reported_as_such () {
+  backup -c STANDARD -e first || { fail "the first backup failed"; return 1; }
+  mkdir -p "${WORK}/dest"
+  : >"${LOG}"
+
+  AWS_ARCHIVED=xaaaa restore -e first -s "${WORK}/dest"
+  local status=$?
+  assert_status "${status}" 4 || return 1
+  assert_contains "$(cat "${WORK}/stderr")" "Glacier" || return 1
+  return 0
+}
+
+test_a_failed_listing_is_an_error () {
+  mkdir -p "${WORK}/dest"
+  AWS_LIST_FAIL=1 restore -e first -s "${WORK}/dest"
+  assert_status "$?" 1 || return 1
+  return 0
+}
+
+test_an_empty_epoch_is_an_error () {
+  mkdir -p "${WORK}/dest"
+  restore -e nothing-here -s "${WORK}/dest"
+  assert_status "$?" 1 || return 1
+  assert_contains "$(cat "${WORK}/stderr")" "no backup found" || return 1
+  return 0
+}
+
+test_restoring_nothing_at_all_is_an_error () {
+  backup -c STANDARD -e first || { fail "the first backup failed"; return 1; }
+  printf 'GARBAGE' >"${S3ROOT}/${BUCKET}/${PREFIX}/first/1_00000000deadbeef/snapshot_info.dat"
+  mkdir -p "${WORK}/dest"
+
+  AGE_UNDECRYPTABLE=GARBAGE restore -e first -s "${WORK}/dest"
+  assert_status "$?" 2 || return 1
+  assert_contains "$(cat "${WORK}/stderr")" "No snapshot was restored" || return 1
+  return 0
+}
+
 test_restore_without_arguments_prints_usage () {
   PATH="${TESTS_DIR}/stubs:${PATH}" "${REPO_DIR}/restore_backup.sh" \
     >"${WORK}/stdout" 2>"${WORK}/stderr"
@@ -633,6 +714,14 @@ run_test "restore replays every sequence in order"                 test_restore_
 run_test "restore skips a sequence with no valid marker"           test_restore_skips_a_sequence_with_no_valid_marker
 run_test "restore -d keeps only the last snapshot"                 test_restore_deletes_previous_snapshots_with_d
 run_test "restore without arguments prints the usage"              test_restore_without_arguments_prints_usage
+
+echo "Running the restore failure tests"
+run_test "a failed receive stops the restore"                      test_a_failed_receive_stops_the_restore
+run_test "a chunk that will not decrypt stops the restore"         test_a_chunk_that_will_not_decrypt_stops_the_restore
+run_test "an archived chunk is reported as such"                   test_an_archived_chunk_is_reported_as_such
+run_test "a failed listing is an error"                            test_a_failed_listing_is_an_error
+run_test "an empty epoch is an error"                              test_an_empty_epoch_is_an_error
+run_test "restoring nothing at all is an error"                    test_restoring_nothing_at_all_is_an_error
 
 echo
 echo "${PASSED} passed, ${FAILED} failed"
