@@ -55,8 +55,9 @@ sitting in users' buckets:
   add `set -E`: with `errtrace` the ERR trap is inherited by command substitutions, and the cleanup
   handler would run inside subshells.
 - GNU `split --filter` runs the filter through `$SHELL -c`, not through the script's own
-  interpreter, so the ambient `$SHELL` decides how the filter behaves. The filter runs as root:
-  prefer passing values into it through the environment over interpolating them into its text.
+  interpreter, so `stream_backup.sh` passes an explicit `SHELL=` to `split` rather than letting the
+  ambient login shell decide how the filter's error handling behaves. The filter runs as root, so
+  its values reach it through the environment instead of being interpolated into its text.
 - `$SHELL` is the login-shell variable, not the running interpreter. `$BASH_VERSION` is.
 - These scripts run as root and delete subvolumes. Quote every expansion.
 
