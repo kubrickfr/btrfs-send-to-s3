@@ -1,0 +1,14 @@
+#!/bin/bash
+#
+# Stub for date, so sequence numbers are deterministic and a test can take two
+# backups without waiting a second between them.
+#
+# Test knob:
+#   TEST_NOW=<seconds>   what 'date +%s' reports (default 1)
+
+if [ "$1" = "+%s" ]; then
+  printf '%s\n' "${TEST_NOW:-1}"
+  exit 0
+fi
+
+exec /usr/bin/date "$@"

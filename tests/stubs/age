@@ -1,0 +1,30 @@
+#!/bin/bash
+#
+# Stub for age.  Encryption is the identity function so a backup written by the
+# harness can be replayed through the restore script unchanged.
+#
+# Test knobs:
+#   FAIL_STAGE=age FAIL_CHUNK=<name>  fail while encrypting that chunk ($FILE is
+#                                     set by split; "marker" means snapshot_info.dat)
+#   AGE_UNDECRYPTABLE=<key suffix>    make -d fail for objects with that suffix
+
+if [ "$1" = "-d" ]; then
+  # A file, not a variable: the streams are binary.
+  buffer=$(mktemp)
+  trap 'rm -f -- "${buffer}"' EXIT
+  cat >"${buffer}"
+  if [ -n "${AGE_UNDECRYPTABLE}" ] && grep -qaF -- "${AGE_UNDECRYPTABLE}" "${buffer}"; then
+    echo "age: error: no identity matched any of the recipients" >&2
+    exit 1
+  fi
+  cat -- "${buffer}"
+  exit 0
+fi
+
+if [ "${FAIL_STAGE}" = age ] && [ "${FILE:-marker}" = "${FAIL_CHUNK:-marker}" ]; then
+  cat >/dev/null
+  echo "age: error: failed to read recipients file" >&2
+  exit 1
+fi
+
+exec cat

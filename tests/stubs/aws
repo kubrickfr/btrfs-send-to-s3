@@ -1,0 +1,110 @@
+#!/bin/bash
+#
+# Stub for the AWS CLI.  Objects live under ${S3ROOT}/<bucket>/<key>.
+#
+# Test knobs:
+#   FAIL_STAGE=aws FAIL_CHUNK=<suffix>  fail an upload whose key ends in <suffix>,
+#                                       after consuming stdin (the shape a real
+#                                       multipart completion failure takes)
+#   AWS_LS_OK=1                         pretend the identity may list the bucket
+#   AWS_LIST_FAIL=1                     make list-objects-v2 fail
+#   AWS_ARCHIVED=<key suffix>           report the object as un-restored DEEP_ARCHIVE
+#   AWS_HEAD_ERROR=<key suffix>         make head-object fail with a non-404 error
+
+log () { [ -n "${LOG}" ] && printf '%s\n' "$*" >>"${LOG}"; return 0; }
+
+service=$1
+shift
+
+case ${service} in
+  s3)
+    action=$1
+    shift
+    case ${action} in
+      cp)
+        src=$1
+        dst=$2
+        if [ "${src}" = "-" ]; then
+          key=${dst#s3://}
+          bucket=${key%%/*}
+          key=${key#*/}
+          mkdir -p -- "${S3ROOT}/${bucket}/$(dirname -- "${key}")"
+          cat >"${S3ROOT}/${bucket}/${key}"
+          if [ "${FAIL_STAGE}" = aws ] && [ -n "${FAIL_CHUNK}" ] \
+             && [ "${key}" != "${key%${FAIL_CHUNK}}" ]; then
+            rm -f -- "${S3ROOT}/${bucket}/${key}"
+            echo "upload failed: An error occurred (AccessDenied)" >&2
+            exit 1
+          fi
+          log "UPLOADED: ${bucket}/${key}"
+          exit 0
+        fi
+        key=${src#s3://}
+        bucket=${key%%/*}
+        key=${key#*/}
+        if [ ! -f "${S3ROOT}/${bucket}/${key}" ]; then
+          echo "fatal error: An error occurred (404) when calling the HeadObject operation" >&2
+          exit 1
+        fi
+        log "DOWNLOADED: ${bucket}/${key}"
+        cat -- "${S3ROOT}/${bucket}/${key}"
+        exit 0
+        ;;
+      ls)
+        [ "${AWS_LS_OK}" = 1 ] && exit 0
+        echo "An error occurred (AccessDenied) when calling the ListObjectsV2 operation" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  s3api)
+    action=$1
+    shift
+    bucket=""
+    key=""
+    prefix=""
+    while [ $# -gt 0 ]; do
+      case $1 in
+        --bucket) bucket=$2; shift 2 ;;
+        --key)    key=$2;    shift 2 ;;
+        --prefix) prefix=$2; shift 2 ;;
+        *)        shift ;;
+      esac
+    done
+    case ${action} in
+      list-objects-v2)
+        if [ "${AWS_LIST_FAIL}" = 1 ]; then
+          echo "An error occurred (NoSuchBucket)" >&2
+          exit 254
+        fi
+        found=0
+        for d in "${S3ROOT}/${bucket}/${prefix}"*/; do
+          [ -d "${d}" ] || continue
+          printf '%s\n' "${prefix}$(basename -- "${d}")/"
+          found=1
+        done
+        [ "${found}" = 0 ] && echo "None"
+        exit 0
+        ;;
+      head-object)
+        if [ -n "${AWS_HEAD_ERROR}" ] && [ "${key}" != "${key%${AWS_HEAD_ERROR}}" ]; then
+          echo "An error occurred (503) when calling the HeadObject operation" >&2
+          exit 254
+        fi
+        if [ ! -f "${S3ROOT}/${bucket}/${key}" ]; then
+          echo "An error occurred (404) when calling the HeadObject operation: Not Found" >&2
+          exit 254
+        fi
+        if [ -n "${AWS_ARCHIVED}" ] && [ "${key}" != "${key%${AWS_ARCHIVED}}" ]; then
+          printf 'DEEP_ARCHIVE\tNone\n'
+        else
+          printf 'STANDARD\tNone\n'
+        fi
+        exit 0
+        ;;
+    esac
+    ;;
+esac
+
+echo "stub aws: unhandled invocation: ${service} $*" >&2
+exit 64
