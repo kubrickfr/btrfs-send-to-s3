@@ -177,14 +177,17 @@ if [ -z "${LAST_SNAPSHOT}" ] && [ -n "${SOURCE_EPOCH}" ]; then
   SNAPSHOT_FROM_OTHER_EPOCH=true
 fi
 
+SEND_ARGS=()
+
 if [ -z "${LAST_SNAPSHOT}" ]; then
   echo "No previous snapshot found for this epoch; making a full backup"
   DELETE_PREVIOUS=false
-  BTRFS_COMMAND="btrfs send ${NEW_SNAPSHOT}"
 else
   PARENT_PATH=${PARENT_DIR}/${LAST_SNAPSHOT}
-  BTRFS_COMMAND="btrfs send -p ${PARENT_PATH} ${NEW_SNAPSHOT}"
+  SEND_ARGS+=(-p "${PARENT_PATH}")
 fi
+
+SEND_ARGS+=("${NEW_SNAPSHOT}")
 
 mkdir -p -- "${EPOCH_DIR}"
 btrfs subvolume snapshot -r "${SUBV}" "${NEW_SNAPSHOT}" || exit 1
@@ -199,7 +202,7 @@ export RECIPIENTS_FILE S3_SEQ_URL SCLASS
 
 # stdout is the backup itself, and btrfs send writes progress as well as errors
 # to stderr, so its stderr goes to a file and is shown only on failure.
-if ! eval ${BTRFS_COMMAND} 2>"${SEND_LOG}" \
+if ! btrfs send "${SEND_ARGS[@]}" 2>"${SEND_LOG}" \
 	| lz4 \
 	| mbuffer -m ${CHUNK_SIZE} -q \
 	| SHELL="${SPLIT_SHELL}" split -b ${CHUNK_SIZE} --suffix-length 4 --filter \
