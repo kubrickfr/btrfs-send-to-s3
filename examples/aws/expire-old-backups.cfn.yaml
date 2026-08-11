@@ -167,7 +167,7 @@ Resources:
   EventBridgeRule:
     Type: AWS::Events::Rule
     Properties:
-      Name: triggerBtrfsSendToS3LCPolictCreation
+      Name: triggerBtrfsSendToS3LCPolicyCreation
       Description: 'Trigger Lambda function to update S3 lifecycle policies'
       ScheduleExpression: 'cron(7 5 10 * ? *)'
       State: ENABLED

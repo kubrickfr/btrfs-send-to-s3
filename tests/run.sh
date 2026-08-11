@@ -366,6 +366,42 @@ test_unknown_subvolume_is_an_error () {
   return 0
 }
 
+# Uploading from a stream, the CLI otherwise assumes 8MiB parts and gives up at
+# the 10000 part limit, a little under 78GiB.
+test_the_upload_is_told_how_big_a_chunk_is () {
+  backup -c STANDARD -e first -S 1G
+  local status=$?
+  assert_status "${status}" 0 || return 1
+  assert_contains "$(actions)" "EXPECTED_SIZE: 1073741824" || return 1
+  return 0
+}
+
+test_nested_subvolumes_are_reported () {
+  NESTED_SUBVOLS="ID 256 gen 9 top level 5 path subv/var/lib/docker
+" backup -c STANDARD -e first
+  local status=$?
+  assert_status "${status}" 0 || return 1
+  assert_contains "$(cat "${WORK}/stderr")" "nested subvolumes" || return 1
+  assert_contains "$(cat "${WORK}/stderr")" "var/lib/docker" || return 1
+  return 0
+}
+
+test_an_unknown_option_is_reported_with_its_name () {
+  PATH="${TESTS_DIR}/stubs:${PATH}" "${REPO_DIR}/stream_backup.sh" -Z \
+    >"${WORK}/stdout" 2>"${WORK}/stderr"
+  assert_status "$?" 1 || return 1
+  assert_contains "$(cat "${WORK}/stderr")" "Invalid option: -Z" || return 1
+  return 0
+}
+
+test_an_option_without_its_argument_is_reported () {
+  PATH="${TESTS_DIR}/stubs:${PATH}" "${REPO_DIR}/stream_backup.sh" -b \
+    >"${WORK}/stdout" 2>"${WORK}/stderr"
+  assert_status "$?" 1 || return 1
+  assert_contains "$(cat "${WORK}/stderr")" "Option -b needs an argument" || return 1
+  return 0
+}
+
 test_warns_when_the_identity_can_list_the_bucket () {
   AWS_LS_OK=1 backup -c STANDARD -e first
   assert_status "$?" 0 || return 1
@@ -758,6 +794,10 @@ run_test "a failing salt stops the backup"                         test_a_failin
 run_test "no arguments prints the usage"                           test_no_arguments_prints_usage
 run_test "an unknown subvolume is an error"                        test_unknown_subvolume_is_an_error
 run_test "a listable bucket raises a security warning"             test_warns_when_the_identity_can_list_the_bucket
+run_test "the upload is told how big a chunk is"                   test_the_upload_is_told_how_big_a_chunk_is
+run_test "nested subvolumes are reported"                          test_nested_subvolumes_are_reported
+run_test "an unknown option is reported with its name"             test_an_unknown_option_is_reported_with_its_name
+run_test "an option without its argument is reported"              test_an_option_without_its_argument_is_reported
 
 echo "Running the backup failure tests"
 run_test "a failing chunk upload fails the backup"                 test_failing_chunk_upload_fails_the_backup

@@ -14,13 +14,14 @@ if [ "$EUID" -ne 0 ]
   exit 1
 fi
 
-$(dirname "$0")/check_deps.sh || exit 3
+"$(dirname "$0")/check_deps.sh" || exit 3
 
 DELETE_PREVIOUS=false
+MBUFFER_SIZE="1G"
 
-OPTSTRING="b:p:e:i:s:d"
+OPTSTRING=":b:p:e:i:s:m:d"
 
-while getopts ${OPTSTRING} opt; do
+while getopts "${OPTSTRING}" opt; do
   case ${opt} in
     b)
       echo "Bucket: ${OPTARG}"
@@ -42,16 +43,31 @@ while getopts ${OPTSTRING} opt; do
       echo "Restore path: ${OPTARG}"
       DEST=${OPTARG}
       ;;
+    m)
+      echo "Buffer size: ${OPTARG}"
+      MBUFFER_SIZE=${OPTARG}
+      ;;
     d) 
       echo "Delete all restored snapshots but the last one"
       DELETE_PREVIOUS=true
       ;;
+    :)
+      echo "Option -${OPTARG} needs an argument." >&2
+      exit 1
+      ;;
     ?)
-      echo "Invalid option: -${OPTARG}."
+      echo "Invalid option: -${OPTARG}." >&2
       exit 1
       ;;
   esac
 done
+
+shift $((OPTIND - 1))
+
+if [ $# -ne 0 ]; then
+  echo "Unexpected argument: $1" >&2
+  exit 1
+fi
 
 if [ "" == "$IDENTITY_FILE" ] || [ "" == "$BUCKET" ] || [ "" == "$PREFIX" ] || [ "" == "$EPOCH" ] || [ "" == "$DEST" ]; then
 cat << EOF
@@ -62,6 +78,9 @@ Usage:
   -p prefix   : a prefix to use in that bucket
   -e epoch    : epoch of the backup we want to restore
   -s path     : BTRFS path were to restore the backup
+  [-m size]   : how much of the stream to hold in memory while
+                restoring. Default to 1G, K,M,G suffixes are
+                supported
   [-d]        : after restoring each incremental backup, delete
                 the one it's based on to save space, thus
                 keeping only the last version
@@ -102,7 +121,7 @@ function chunk_state () {
           --query '[StorageClass,Restore]' --output text 2>&1)
   status=$?
 
-  if [ ${status} -ne 0 ]; then
+  if [ "${status}" -ne 0 ]; then
     case ${out} in
       *"(404)"*|*"Not Found"*)
         printf 'missing\n'
@@ -201,7 +220,7 @@ for SEQ_PREFIX in "${SEQ_PREFIXES[@]}"; do
   fi
 
   echo "Restoring ${SEQ_PREFIX}"
-  fetch_chunks "${SEQ_PREFIX}" | mbuffer -m 1G -q | lz4 -d | btrfs receive "${DEST}"
+  fetch_chunks "${SEQ_PREFIX}" | mbuffer -m "${MBUFFER_SIZE}" -q | lz4 -d | btrfs receive "${DEST}"
   STATUS=("${PIPESTATUS[@]}")
 
   if [ "${STATUS[0]}" -ne 0 ] || [ "${STATUS[1]}" -ne 0 ] \

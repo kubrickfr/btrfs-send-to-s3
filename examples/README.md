@@ -22,7 +22,7 @@ Create an S3 bucket, choose a prefix you want to write the backups to.
 
 Every month on the 10th, at 0507UTC, it creates new lifecycle rules for the s3 bucket and prefix:
 * On the 4th of each month, it deletes the incremental daily backups of the previous month.
-* On the 4th of february every year, it deletes the incremental montly backups of the previous year.
+* On the 4th of february every year, it deletes the incremental monthly backups of the previous year.
 
 # Restoring
 
@@ -41,14 +41,14 @@ export STORAGE_CLASS="DEEP_ARCHIVE"
 aws s3api list-objects-v2 --bucket $BUCKET --prefix $PREFIX --output json | jq --arg bucket ${BUCKET} -r '.Contents[] | select(.StorageClass == "DEEP_ARCHIVE") | "\"\($bucket)\",\"\(.Key)\""' > job.csv
 ```
 
-This should produce a `job.csv` file that you need to put on the S3 bucket at `s3://$BUCKET/$PREFIX/restore/job.csv`. Make a note of the object's  ETAG (MD5 sum). In theory you can use any bucket and prefix, but the preivous path aligns with the permissions given by the `./aws/expire-old-backups.cfn.yaml` CloudFormation template.
+This should produce a `job.csv` file that you need to put on the S3 bucket at `s3://$BUCKET/$PREFIX/restore/job.csv`. Make a note of the object's ETag (MD5 sum). In theory you can use any bucket and prefix, but the previous path aligns with the permissions given by the `./aws/expire-old-backups.cfn.yaml` CloudFormation template.
 
 ## Create a restore job
 
 In the following example, replace:
 * `REGION`, self explanatory
 * `ACCOUNT_ID`, self explanatory
-* `JOB_TIER`, can be `EXPEDITED`, `STANDARD` or `BULK` (See [documentation](https://docs.aws.amazon.com/AmazonS3/latest/API/API_RestoreObject.html) and [princing](https://aws.amazon.com/s3/pricing/))
+* `JOB_TIER`, can be `EXPEDITED`, `STANDARD` or `BULK` (See [documentation](https://docs.aws.amazon.com/AmazonS3/latest/API/API_RestoreObject.html) and [pricing](https://aws.amazon.com/s3/pricing/))
 * `BUCKET`, self explanatory, *multiple occurences*
 * `PREFIX`, self explanatory, *multiple occurences*
 * `BulkRetrievalRole_ARN`, is an IAM role created by the `./aws/expire-old-backups.cfn.yaml` CloudFormation template

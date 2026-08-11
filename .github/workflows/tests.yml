@@ -14,3 +14,15 @@ jobs:
       # itself in a user namespace; here it is simpler to just be root.
       - name: Run the test suite
         run: sudo ./tests/run.sh
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Lint the scripts
+        run: |
+          shellcheck --severity=warning \
+            stream_backup.sh restore_backup.sh check_deps.sh \
+            tests/run.sh tests/stubs/*
