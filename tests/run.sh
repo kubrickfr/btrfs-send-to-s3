@@ -77,8 +77,16 @@ actions () {
   cat "${LOG}"
 }
 
+# Snapshots that count as complete: named after their sequence number and
+# sitting directly in an epoch directory.
 snapshots () {
   find "${TEST_SUBV}" -mindepth 2 -maxdepth 2 -type d -path '*/.stream_backup_*' \
+    2>/dev/null | sed "s|${TEST_SUBV}/||" | grep -E '/[0-9]+$' | LC_ALL=C sort
+}
+
+# Snapshots still in the staging directory, which no run may chain from.
+staged () {
+  find "${TEST_SUBV}" -mindepth 3 -maxdepth 3 -type d -path '*/.incomplete/*' \
     2>/dev/null | sed "s|${TEST_SUBV}/||" | LC_ALL=C sort
 }
 
@@ -372,6 +380,7 @@ assert_upload_failure_is_reported () {
   assert_status "$1" 2 || return 1
   assert_equal "$(uploaded | grep -c snapshot_info.dat)" "0" || return 1
   assert_equal "$(snapshots)" "" || return 1
+  assert_equal "$(staged)" "" || return 1
   return 0
 }
 
@@ -447,6 +456,82 @@ test_a_successful_backup_is_quiet_about_send () {
   case $(cat "${WORK}/stderr") in
     *"At subvol"*) fail "btrfs send progress leaked to stderr on a good run"; return 1 ;;
   esac
+  return 0
+}
+
+# ------------------------------------------------ backup: snapshots left half-done
+#
+# A snapshot whose upload never finished has no completion marker in S3, so
+# restore skips its sequence. Chaining the next backup from it would therefore
+# break every backup after it, while each of them still reported success.
+
+test_an_orphaned_snapshot_is_not_used_as_a_parent () {
+  backup -c STANDARD -e first || { fail "the first backup failed"; return 1; }
+  # What a run killed mid-upload leaves behind.
+  mkdir -p "${TEST_SUBV}/.stream_backup_first/.incomplete/5"
+  : >"${LOG}"
+
+  TEST_NOW=6 backup -c STANDARD -e first
+  local status=$?
+  assert_status "${status}" 0 || return 1
+  assert_contains "$(actions)" "SENT: 6 parent=1" || return 1
+  assert_contains "$(cat "${WORK}/stderr")" "WARNING" || return 1
+  assert_equal "$(staged)" "" || return 1
+  assert_equal "$(snapshots)" ".stream_backup_first/1
+.stream_backup_first/6" || return 1
+  return 0
+}
+
+test_a_terminated_backup_leaves_nothing_behind () {
+  local i=0
+
+  # The backup gets a session of its own so that signalling its process group
+  # cannot touch the test suite; setsid --wait still reports its exit status.
+  (
+    AWS_HANG=1 PGID_FILE="${WORK}/pgid" PATH="${TESTS_DIR}/stubs:${PATH}" \
+      setsid --fork --wait "${REPO_DIR}/stream_backup.sh" \
+        -r "${WORK}/recipients.txt" -b "${BUCKET}" -p "${PREFIX}" \
+        -s "${TEST_SUBV}" -c STANDARD -e first >/dev/null 2>&1
+    echo $? >"${WORK}/status"
+  ) &
+
+  while [ ! -s "${WORK}/pgid" ]; do
+    i=$((i + 1))
+    [ "${i}" -gt 200 ] && { fail "the backup never got as far as uploading"; return 1; }
+    sleep 0.05
+  done
+
+  # systemd signals the whole process group at shutdown, which is what ends the
+  # pipeline and lets the trap run.
+  kill -TERM -"$(cat "${WORK}/pgid")" 2>/dev/null
+
+  i=0
+  while [ ! -f "${WORK}/status" ]; do
+    i=$((i + 1))
+    [ "${i}" -gt 200 ] && { fail "the backup did not exit after SIGTERM"; return 1; }
+    sleep 0.05
+  done
+
+  assert_equal "$(cat "${WORK}/status")" "2" || return 1
+  assert_equal "$(staged)" "" || return 1
+  assert_equal "$(snapshots)" "" || return 1
+  assert_equal "$(uploaded | grep -c snapshot_info.dat)" "0" || return 1
+  return 0
+}
+
+# The backup is safe in S3 by then, so tidying up afterwards must not be able to
+# destroy it, and must not be reported as a failed backup either.
+test_a_failed_tidy_up_keeps_the_backup () {
+  backup -c STANDARD -e first || { fail "the first backup failed"; return 1; }
+  : >"${LOG}"
+
+  TEST_NOW=2 FAIL_STAGE=delete backup -c STANDARD -e first -d
+  local status=$?
+  assert_status "${status}" 4 || return 1
+  assert_equal "$(uploaded | tail -n1)" \
+               "${BUCKET}/${PREFIX}/first/2_00000000deadbeef/snapshot_info.dat" || return 1
+  assert_equal "$(snapshots)" ".stream_backup_first/1
+.stream_backup_first/2" || return 1
   return 0
 }
 
@@ -537,6 +622,11 @@ run_test "a failing marker generation fails the backup"            test_failing_
 run_test "the error names the stage that failed"                   test_the_error_names_the_stage_that_failed
 run_test "a failing send reports its error"                        test_a_failing_send_reports_its_error
 run_test "a successful backup is quiet about send"                 test_a_successful_backup_is_quiet_about_send
+
+echo "Running the interrupted backup tests"
+run_test "an orphaned snapshot is not used as a parent"            test_an_orphaned_snapshot_is_not_used_as_a_parent
+run_test "a terminated backup leaves nothing behind"               test_a_terminated_backup_leaves_nothing_behind
+run_test "a failed tidy up keeps the backup"                       test_a_failed_tidy_up_keeps_the_backup
 
 echo "Running the restore tests"
 run_test "restore replays every sequence in order"                 test_restore_replays_every_sequence_in_order
