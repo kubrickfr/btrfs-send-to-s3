@@ -1,0 +1,6 @@
+#!/bin/bash
+#
+# Stub for sudo, which cannot work in the user namespace the suite runs in.
+# The scripts already require root, so running the command directly is faithful.
+
+exec "$@"

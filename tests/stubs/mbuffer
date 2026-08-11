@@ -1,0 +1,14 @@
+#!/bin/bash
+#
+# Stub for mbuffer.
+#
+# Test knob:
+#   FAIL_STAGE=mbuffer   consume part of the input then die like an OOM kill,
+#                        which gives the downstream stage a clean EOF
+
+if [ "${FAIL_STAGE}" = mbuffer ]; then
+  head -c 100 >/dev/null
+  exit 137
+fi
+
+exec cat

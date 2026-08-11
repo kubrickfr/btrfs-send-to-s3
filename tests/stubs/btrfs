@@ -1,0 +1,136 @@
+#!/bin/bash
+#
+# Stub for btrfs-progs.  Snapshots are plain directories; a send stream is a
+# short deterministic text blob naming the subvolume and its parent, which is
+# what lets a restore test assert that the right streams were replayed.
+#
+# Test knobs:
+#   TEST_SUBV=<path>       the fake subvolume root
+#   FS_PREFIX=<path>       what 'subvolume show' reports as the filesystem-tree
+#                          path of TEST_SUBV (defaults to its basename)
+#   FAIL_STAGE=send|show|snapshot|delete|receive
+#   NESTED_SUBVOLS=<lines> what 'subvolume list -o' reports
+
+log () { [ -n "${LOG}" ] && printf '%s\n' "$*" >>"${LOG}"; return 0; }
+
+# Strip a leading '--' argument separator.
+args=()
+for a in "$@"; do
+  [ "${a}" = "--" ] && continue
+  args+=("${a}")
+done
+set -- "${args[@]}"
+
+fs_path () {
+  # Filesystem-tree path of $1, the way 'btrfs subvolume show' prints it.
+  local prefix=${FS_PREFIX:-$(basename -- "${TEST_SUBV}")}
+  local rel=${1#"${TEST_SUBV}"}
+  rel=${rel#/}
+  if [ -z "${rel}" ]; then printf '%s\n' "${prefix}"; else printf '%s/%s\n' "${prefix}" "${rel}"; fi
+}
+
+case "$1 $2" in
+  "send "*)
+    shift
+    parent=""
+    while [ $# -gt 1 ]; do
+      [ "$1" = "-p" ] && parent=$2 && shift
+      shift
+    done
+    subvol=$1
+    echo "At subvol ${subvol}" >&2
+    if [ "${FAIL_STAGE}" = send ]; then
+      echo "ERROR: cannot find parent subvolume" >&2
+      exit 1
+    fi
+    log "SENT: $(basename -- "${subvol}") parent=$(basename -- "${parent:-none}")"
+    printf 'BTRFS-STREAM subvol=%s parent=%s\n' \
+      "$(basename -- "${subvol}")" "$(basename -- "${parent:-none}")"
+    head -c "${STREAM_BYTES:-4000}" /dev/zero
+    exit 0
+    ;;
+  "receive "*)
+    shift
+    dest=$1
+    IFS= read -r stream
+    header_read=$?
+    cat >/dev/null
+    if [ "${FAIL_STAGE}" = receive ]; then
+      echo "ERROR: cannot find parent subvolume" >&2
+      exit 1
+    fi
+    case ${header_read}${stream} in
+      0BTRFS-STREAM*) ;;
+      *) echo "ERROR: unexpected end of stream" >&2; exit 1 ;;
+    esac
+    name=${stream#BTRFS-STREAM subvol=}
+    parent=${name#* parent=}
+    name=${name%% *}
+    # An incremental stream can only be received if its parent is already here.
+    if [ "${parent}" != none ] && [ ! -d "${dest}/${parent}" ]; then
+      echo "ERROR: cannot find parent subvolume ${parent}" >&2
+      exit 1
+    fi
+    mkdir -p -- "${dest}/${name}"
+    log "RECEIVED: ${name}"
+    exit 0
+    ;;
+esac
+
+case "$1 $2" in
+  "subvolume snapshot")
+    shift 2
+    [ "$1" = "-r" ] && shift
+    src=$1
+    dst=$2
+    if [ "${FAIL_STAGE}" = snapshot ]; then
+      echo "ERROR: cannot snapshot ${src}: No space left on device" >&2
+      exit 1
+    fi
+    [ -d "${src}" ] || { echo "ERROR: not a subvolume: ${src}" >&2; exit 1; }
+    [ -e "${dst}" ] && { echo "ERROR: target already exists: ${dst}" >&2; exit 1; }
+    mkdir -p -- "${dst}"
+    log "SNAPSHOT: ${dst}"
+    echo "Create a readonly snapshot of '${src}' in '${dst}'"
+    exit 0
+    ;;
+  "subvolume delete")
+    shift 2
+    target=$1
+    if [ "${FAIL_STAGE}" = delete ]; then
+      echo "ERROR: cannot delete '${target}': Device or resource busy" >&2
+      exit 1
+    fi
+    [ -d "${target}" ] || { echo "ERROR: not a subvolume: ${target}" >&2; exit 1; }
+    rm -rf -- "${target}"
+    log "DELETED: ${target}"
+    echo "Delete subvolume (no-commit): '${target}'"
+    exit 0
+    ;;
+  "subvolume show")
+    shift 2
+    target=${1%/}
+    [ -d "${target}" ] || { echo "ERROR: not a subvolume: ${target}" >&2; exit 1; }
+    if [ "${FAIL_STAGE}" = show ]; then
+      echo "ERROR: cannot access '${target}'" >&2
+      exit 1
+    fi
+    fs_path "${target}"
+    printf '\tUUID:\t\t\t11111111-2222-3333-4444-555555555555\n'
+    printf '\tCreation time:\t\t2026-01-01 00:00:00 +0000\n'
+    printf '\tSnapshot(s):\n'
+    for d in "${TEST_SUBV}"/.stream_backup_*/*/; do
+      [ -d "${d}" ] || continue
+      case ${d} in *"/.incomplete/"*) continue ;; esac
+      printf '\t\t\t\t%s\n' "$(fs_path "${d%/}")"
+    done
+    exit 0
+    ;;
+  "subvolume list")
+    printf '%s' "${NESTED_SUBVOLS}"
+    exit 0
+    ;;
+esac
+
+echo "stub btrfs: unhandled invocation: $*" >&2
+exit 64

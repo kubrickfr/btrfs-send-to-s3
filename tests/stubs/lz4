@@ -1,0 +1,24 @@
+#!/bin/bash
+#
+# Stub for lz4.  Compression is the identity function.
+#
+# Test knobs:
+#   FAIL_STAGE=lz4     fail while compressing
+#   FAIL_STAGE=lz4d    fail while decompressing
+
+if [ "$1" = "-d" ]; then
+  if [ "${FAIL_STAGE}" = lz4d ]; then
+    cat >/dev/null
+    echo "lz4: corrupted input" >&2
+    exit 1
+  fi
+  exec cat
+fi
+
+if [ "${FAIL_STAGE}" = lz4 ]; then
+  cat >/dev/null
+  echo "lz4: write error" >&2
+  exit 1
+fi
+
+exec cat
