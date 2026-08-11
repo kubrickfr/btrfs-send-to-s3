@@ -10,6 +10,10 @@
 # commands with https://habilis.net/cronic/ to avoid sending emails on success
 #
 
+# cron's default PATH is short: it usually has neither /usr/local/bin, where
+# the AWS CLI and age tend to live, nor /usr/sbin, where btrfs does.
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
 BUCKET=your-s3-bucket-name
 PREFIX=s3-prefix-to-identify-backup-in-bucket
 SUBVOLUME=/path/to/mounted/btrfs/subvolume
@@ -22,7 +26,7 @@ SUBVOLUME=/path/to/mounted/btrfs/subvolume
 # |  |  |  |  |
 
 # Do a montly scrub, towards the end of the month
-0 21 27    *   *  btrfs scrub start -B /mnt/BIG/
+0 21 27    *   *  btrfs scrub start -B ${SUBVOLUME}
 
 # Every month, perform an incremental backup relative to the previous month.
 # In January, it will start a new epoch automatically
