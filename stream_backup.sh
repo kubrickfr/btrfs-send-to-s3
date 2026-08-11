@@ -210,6 +210,19 @@ if ! btrfs subvolume show "${SUBV}" >/dev/null 2>&1; then
   exit 1
 fi
 
+# Snapshots are not recursive, and neither is the stream: a subvolume nested
+# inside this one arrives as an empty directory. Docker's btrfs driver, snapper
+# and LXD all create them under paths people back up.
+NESTED=$(btrfs subvolume list -o "${SUBV}" 2>/dev/null \
+           | grep -v '/\.stream_backup_' || true)
+
+if [ -n "${NESTED}" ]; then
+  echo "WARNING: ${SUBV} contains nested subvolumes. They will be backed up as" >&2
+  echo "         EMPTY directories, because snapshots do not descend into them." >&2
+  echo "         Back them up separately if you need their contents:" >&2
+  printf '%s\n' "${NESTED}" >&2
+fi
+
 EPOCH_DIR=${SUBV%/}/.stream_backup_${EPOCH}
 # A snapshot is only moved out of here once its upload has completed, so
 # whatever is left in it is unusable, and being in it is what stops
