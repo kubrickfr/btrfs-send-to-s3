@@ -12,6 +12,7 @@ These scripts rely on well known command line tools and the AWS CLI:
 * sed
 * age (or [rage](https://github.com/str4d/rage/) symlinked to `age` binary in PATH)
 * btrfs-tools
+* openssl
 
 # Design
 Rather than dealing with the complexity of custom file formats and metadata files, we use exclusively the state managed by btrfs-tools and file name conventions on S3.
