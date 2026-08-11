@@ -178,12 +178,19 @@ rm -f -- "${SEND_LOG}"
 SEND_LOG=""
 
 # We only write the subvolume information to S3 at the end, as a marker of completion of the backup
-# having the subvolume information might help debuging tricky situations
-btrfs subvolume show ${NEW_SNAPSHOT} \
-  | age -R ${RECIPIENTS_FILE} \
-  | aws s3 cp - s3://${BUCKET}/${PREFIX}/${EPOCH}/${SEQ_SALTED}/snapshot_info.dat
+# having the subvolume information might help debuging tricky situations.
+SNAPSHOT_INFO=$(btrfs subvolume show ${NEW_SNAPSHOT})
 
-if [ "${PIPESTATUS}" != "0" ]; then
+if [ -z "${SNAPSHOT_INFO}" ]; then
+  echo "ERROR: btrfs subvolume show ${NEW_SNAPSHOT} returned nothing" >&2
+  cleanup
+fi
+
+if ! printf '%s\n' "${SNAPSHOT_INFO}" \
+  | age -R "${RECIPIENTS_FILE}" \
+  | aws s3 cp - "${S3_SEQ_URL}/snapshot_info.dat"
+then
+  echo "ERROR: could not upload the completion marker for ${SEQ_SALTED}" >&2
   cleanup
 fi
 
