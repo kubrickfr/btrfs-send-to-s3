@@ -32,6 +32,8 @@ CURRENT=""
 # ---------------------------------------------------------------- test harness
 
 setup () {
+  # The previous test's TMPDIR has been deleted by now.
+  unset TMPDIR
   WORK=$(mktemp -d)
   export TEST_SUBV=${WORK}/subv
   export S3ROOT=${WORK}/s3
@@ -44,6 +46,8 @@ setup () {
   echo "AGE-SECRET-KEY-EXAMPLE" >"${WORK}/identity.txt"
   # What cron sets, and therefore what the scripts have to cope with.
   export SHELL=/bin/sh
+  # Keeps temporary files, including lock files, inside the test's own directory.
+  export TMPDIR=${WORK}
   unset FAIL_STAGE FAIL_CHUNK FAIL_RECEIVE FS_PREFIX AWS_LS_OK AWS_LIST_FAIL \
         AWS_ARCHIVED AWS_HEAD_ERROR AWS_HANG AGE_UNDECRYPTABLE NESTED_SUBVOLS \
         STREAM_BYTES TEST_SALT TEST_NOW
@@ -535,6 +539,69 @@ test_a_failed_tidy_up_keeps_the_backup () {
   return 0
 }
 
+# ------------------------------------------------------- backup: runs that overlap
+
+# Two runs at once can both pick the same parent, or one can pick a snapshot the
+# other has not finished uploading.
+test_a_second_run_on_the_same_subvolume_is_refused () {
+  local i=0
+
+  (
+    AWS_HANG=1 PGID_FILE="${WORK}/pgid" PATH="${TESTS_DIR}/stubs:${PATH}" \
+      setsid --fork --wait "${REPO_DIR}/stream_backup.sh" \
+        -r "${WORK}/recipients.txt" -b "${BUCKET}" -p "${PREFIX}" \
+        -s "${TEST_SUBV}" -c STANDARD -e first >/dev/null 2>&1
+    echo $? >"${WORK}/status"
+  ) &
+
+  while [ ! -s "${WORK}/pgid" ]; do
+    i=$((i + 1))
+    [ "${i}" -gt 200 ] && { fail "the first run never got as far as uploading"; return 1; }
+    sleep 0.05
+  done
+
+  # A different epoch, because the lock is about the subvolume, not the epoch.
+  TEST_NOW=2 backup -c STANDARD -e second
+  local status=$?
+
+  kill -TERM -"$(cat "${WORK}/pgid")" 2>/dev/null
+  i=0
+  while [ ! -f "${WORK}/status" ]; do
+    i=$((i + 1))
+    [ "${i}" -gt 200 ] && break
+    sleep 0.05
+  done
+
+  assert_status "${status}" 1 || return 1
+  assert_contains "$(cat "${WORK}/stderr")" "Refusing to run two at once" || return 1
+  return 0
+}
+
+# Restoring replays sequences in the order of their numbers, so a snapshot
+# numbered below its own parent could never be restored.
+test_a_clock_that_went_backwards_is_refused () {
+  TEST_NOW=100 backup -c STANDARD -e first \
+    || { fail "the first backup failed"; return 1; }
+  : >"${LOG}"
+
+  TEST_NOW=50 backup -c STANDARD -e first
+  local status=$?
+  assert_status "${status}" 1 || return 1
+  assert_equal "$(uploaded)" "" || return 1
+  assert_equal "$(snapshots)" ".stream_backup_first/100" || return 1
+  return 0
+}
+
+test_a_second_backup_in_the_same_second_is_refused () {
+  backup -c STANDARD -e first || { fail "the first backup failed"; return 1; }
+  : >"${LOG}"
+
+  backup -c STANDARD -e first
+  assert_status "$?" 1 || return 1
+  assert_equal "$(uploaded)" "" || return 1
+  return 0
+}
+
 # ------------------------------------------------------------------------ restore
 
 test_restore_replays_every_sequence_in_order () {
@@ -708,6 +775,11 @@ echo "Running the interrupted backup tests"
 run_test "an orphaned snapshot is not used as a parent"            test_an_orphaned_snapshot_is_not_used_as_a_parent
 run_test "a terminated backup leaves nothing behind"               test_a_terminated_backup_leaves_nothing_behind
 run_test "a failed tidy up keeps the backup"                       test_a_failed_tidy_up_keeps_the_backup
+
+echo "Running the overlapping run tests"
+run_test "a second run on the same subvolume is refused"           test_a_second_run_on_the_same_subvolume_is_refused
+run_test "a clock that went backwards is refused"                  test_a_clock_that_went_backwards_is_refused
+run_test "a second backup in the same second is refused"           test_a_second_backup_in_the_same_second_is_refused
 
 echo "Running the restore tests"
 run_test "restore replays every sequence in order"                 test_restore_replays_every_sequence_in_order
