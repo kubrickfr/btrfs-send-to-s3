@@ -47,6 +47,11 @@ case ${service} in
             exit 1
           fi
           log "UPLOADED: ${bucket}/${key}"
+          prev=""
+          for arg in "$@"; do
+            [ "${prev}" = "--expected-size" ] && log "EXPECTED_SIZE: ${arg}"
+            prev=${arg}
+          done
           exit 0
         fi
         key=${src#s3://}
