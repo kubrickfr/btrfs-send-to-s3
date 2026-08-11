@@ -22,11 +22,19 @@ done
 set -- "${args[@]}"
 
 fs_path () {
-  # Filesystem-tree path of $1, the way 'btrfs subvolume show' prints it.
+  # Filesystem-tree path of $1, the way 'btrfs subvolume show' prints it: the
+  # path relative to the root of the filesystem, which for the top-level
+  # subvolume (id 5) is reported as "/".
   local prefix=${FS_PREFIX:-$(basename -- "${TEST_SUBV}")}
   local rel=${1#"${TEST_SUBV}"}
   rel=${rel#/}
-  if [ -z "${rel}" ]; then printf '%s\n' "${prefix}"; else printf '%s/%s\n' "${prefix}" "${rel}"; fi
+  if [ -z "${rel}" ]; then
+    printf '%s\n' "${prefix}"
+  elif [ "${prefix}" = "/" ]; then
+    printf '%s\n' "${rel}"
+  else
+    printf '%s/%s\n' "${prefix}" "${rel}"
+  fi
 }
 
 case "$1 $2" in
@@ -41,6 +49,10 @@ case "$1 $2" in
     echo "At subvol ${subvol}" >&2
     if [ "${FAIL_STAGE}" = send ]; then
       echo "ERROR: cannot find parent subvolume" >&2
+      exit 1
+    fi
+    if [ -n "${parent}" ] && [ ! -d "${parent}" ]; then
+      echo "ERROR: cannot find parent subvolume ${parent}" >&2
       exit 1
     fi
     log "SENT: $(basename -- "${subvol}") parent=$(basename -- "${parent:-none}")"

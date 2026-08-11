@@ -114,8 +114,31 @@ function cleanup () {
   if [ -n "${SEND_LOG}" ]; then
     rm -f -- "${SEND_LOG}"
   fi
-  btrfs subvolume delete ${NEW_SNAPSHOT}
+  btrfs subvolume delete "${NEW_SNAPSHOT}"
   exit 2
+}
+
+# Name of the newest snapshot in a snapshot directory, or nothing if it holds
+# none. Our snapshots are named after the second they were taken in, so anything
+# that is not a plain number was not put there by this script.
+function latest_snapshot () {
+  local dir=$1
+  local path name newest=""
+
+  [ -d "${dir}" ] || return 0
+
+  for path in "${dir}"/*; do
+    name=${path##*/}
+    case ${name} in
+      ''|*[!0-9]*) continue ;;
+    esac
+    btrfs subvolume show "${path}" >/dev/null 2>&1 || continue
+    if [ -z "${newest}" ] || [ "${name}" -gt "${newest}" ]; then
+      newest=${name}
+    fi
+  done
+
+  printf '%s\n' "${newest}"
 }
 
 aws s3 ls s3://${BUCKET}/${PREFIX} >/dev/null 2>&1 \
@@ -133,37 +156,41 @@ fi
 
 SEQ_SALTED=${SEQ}_${SALT}
 
-SUBV_INFO=$(btrfs subvolume show ${SUBV})
-SUBV_PREFIX=$(echo "${SUBV_INFO}" | head -n1)
-
-if [ -z "${SUBV_PREFIX}" ]; then
+if ! btrfs subvolume show "${SUBV}" >/dev/null 2>&1; then
   echo "Subvolume not found" >&2
   exit 1
 fi
 
-SNAPSHOTS=$(echo "${SUBV_INFO}" | grep -o "${SUBV_PREFIX}/.stream_backup_${EPOCH}.*")
-NEW_SNAPSHOT=${SUBV}/.stream_backup_${EPOCH}/${SEQ}
+EPOCH_DIR=${SUBV%/}/.stream_backup_${EPOCH}
+NEW_SNAPSHOT=${EPOCH_DIR}/${SEQ}
 
-if [ -z "${SNAPSHOTS}" ] && [ ! -z "${SOURCE_EPOCH}" ]; then
-  SNAPSHOTS=$(echo "${SUBV_INFO}" | grep -o "${SUBV_PREFIX}/.stream_backup_${SOURCE_EPOCH}.*")
-  if [ -z ${SNAPSHOTS} ]; then
+PARENT_DIR=${EPOCH_DIR}
+LAST_SNAPSHOT=$(latest_snapshot "${EPOCH_DIR}")
+
+if [ -z "${LAST_SNAPSHOT}" ] && [ -n "${SOURCE_EPOCH}" ]; then
+  PARENT_DIR=${SUBV%/}/.stream_backup_${SOURCE_EPOCH}
+  LAST_SNAPSHOT=$(latest_snapshot "${PARENT_DIR}")
+  if [ -z "${LAST_SNAPSHOT}" ]; then
     echo "ERROR: Neither the current epoch nor the branch epoch has an existing snapshot" >&2
     exit 1
-  else
-    SNAPSHOT_FROM_OTHER_EPOCH=true
   fi
-fi
-if [ -z "${SNAPSHOTS}" ]; then
-  echo "No previous snapshot found for this epoch; making a full backup"
-  DELETE_PREVIOUS=false
-  BTRFS_COMMAND="btrfs send ${NEW_SNAPSHOT}"
-else
-  LAST_SNAPSHOT=$(echo "${SNAPSHOTS}" | tail -n1)
-  BTRFS_COMMAND="btrfs send -p ${SUBV%%${SUBV_PREFIX}*}${LAST_SNAPSHOT} ${NEW_SNAPSHOT}"
+  SNAPSHOT_FROM_OTHER_EPOCH=true
 fi
 
-mkdir ${SUBV}/.stream_backup_${EPOCH}/ 2>&1 || true
-btrfs subvolume snapshot -r ${SUBV} ${NEW_SNAPSHOT} || exit 1
+SEND_ARGS=()
+
+if [ -z "${LAST_SNAPSHOT}" ]; then
+  echo "No previous snapshot found for this epoch; making a full backup"
+  DELETE_PREVIOUS=false
+else
+  PARENT_PATH=${PARENT_DIR}/${LAST_SNAPSHOT}
+  SEND_ARGS+=(-p "${PARENT_PATH}")
+fi
+
+SEND_ARGS+=("${NEW_SNAPSHOT}")
+
+mkdir -p -- "${EPOCH_DIR}"
+btrfs subvolume snapshot -r "${SUBV}" "${NEW_SNAPSHOT}" || exit 1
 
 trap cleanup ERR
 trap cleanup INT
@@ -175,7 +202,7 @@ export RECIPIENTS_FILE S3_SEQ_URL SCLASS
 
 # stdout is the backup itself, and btrfs send writes progress as well as errors
 # to stderr, so its stderr goes to a file and is shown only on failure.
-if ! eval ${BTRFS_COMMAND} 2>"${SEND_LOG}" \
+if ! btrfs send "${SEND_ARGS[@]}" 2>"${SEND_LOG}" \
 	| lz4 \
 	| mbuffer -m ${CHUNK_SIZE} -q \
 	| SHELL="${SPLIT_SHELL}" split -b ${CHUNK_SIZE} --suffix-length 4 --filter \
@@ -193,7 +220,7 @@ SEND_LOG=""
 
 # We only write the subvolume information to S3 at the end, as a marker of completion of the backup
 # having the subvolume information might help debuging tricky situations.
-SNAPSHOT_INFO=$(btrfs subvolume show ${NEW_SNAPSHOT})
+SNAPSHOT_INFO=$(btrfs subvolume show "${NEW_SNAPSHOT}")
 
 if [ -z "${SNAPSHOT_INFO}" ]; then
   echo "ERROR: btrfs subvolume show ${NEW_SNAPSHOT} returned nothing" >&2
@@ -213,8 +240,8 @@ fi
 # * If there is a previous snapshot in the first place
 # * If the snapshot is not from another epoch
 if     [ "${DELETE_PREVIOUS}" == true ] \
-    && [ ! -z "${LAST_SNAPSHOT}" ] \
+    && [ -n "${LAST_SNAPSHOT}" ] \
     && [ ${SNAPSHOT_FROM_OTHER_EPOCH} == false ]; then
-  btrfs subvolume delete ${SUBV%%${SUBV_PREFIX}*}${LAST_SNAPSHOT}
+  btrfs subvolume delete "${PARENT_PATH}"
 fi
 

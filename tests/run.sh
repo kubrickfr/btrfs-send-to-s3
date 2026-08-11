@@ -79,7 +79,7 @@ actions () {
 
 snapshots () {
   find "${TEST_SUBV}" -mindepth 2 -maxdepth 2 -type d -path '*/.stream_backup_*' \
-    2>/dev/null | sed "s|${TEST_SUBV}/||" | sort
+    2>/dev/null | sed "s|${TEST_SUBV}/||" | LC_ALL=C sort
 }
 
 fail () {
@@ -201,6 +201,49 @@ test_branch_epoch_missing_is_an_error () {
   backup -c STANDARD -e daily -B nonexistent
   assert_status "$?" 1 || return 1
   assert_contains "$(cat "${WORK}/stderr")" "ERROR" || return 1
+  return 0
+}
+
+# --------------------------------------------------------------- backup: layouts
+#
+# 'btrfs subvolume show' reports a subvolume's path relative to the root of the
+# filesystem, which has nothing to do with where it is mounted. These are the
+# layouts where the two differ.
+
+# What "mount -o subvol=@home" gives you: mounted at /home, called @home inside
+# the filesystem.
+test_incremental_backup_on_a_subvol_mount () {
+  FS_PREFIX="@home" backup -c STANDARD -e first \
+    || { fail "the first backup failed"; return 1; }
+  FS_PREFIX="@home" TEST_NOW=2 backup -c STANDARD -e first
+  local status=$?
+  assert_status "${status}" 0 || return 1
+  assert_contains "$(actions)" "SENT: 2 parent=1" || return 1
+  return 0
+}
+
+# The top-level subvolume, id 5, whose path is reported as "/".
+test_incremental_backup_of_the_top_level_subvolume () {
+  FS_PREFIX="/" backup -c STANDARD -e first \
+    || { fail "the first backup failed"; return 1; }
+  FS_PREFIX="/" TEST_NOW=2 backup -c STANDARD -e first -d
+  local status=$?
+  assert_status "${status}" 0 || return 1
+  assert_contains "$(actions)" "SENT: 2 parent=1" || return 1
+  # -d has to work here too, or snapshots pile up until the disk fills.
+  assert_equal "$(snapshots)" ".stream_backup_first/2" || return 1
+  return 0
+}
+
+# One epoch name being a prefix of another must not make them share snapshots.
+test_epoch_names_that_share_a_prefix_stay_separate () {
+  backup -c STANDARD -e daily-2026-10 || { fail "the first backup failed"; return 1; }
+  TEST_NOW=2 backup -c STANDARD -e daily-2026-1 -d
+  local status=$?
+  assert_status "${status}" 0 || return 1
+  assert_contains "$(actions)" "SENT: 2 parent=none" || return 1
+  assert_equal "$(snapshots)" ".stream_backup_daily-2026-1/2
+.stream_backup_daily-2026-10/1" || return 1
   return 0
 }
 
@@ -469,6 +512,9 @@ run_test "-d deletes the snapshot it chained from"                 test_delete_p
 run_test "a new epoch starts a full backup"                        test_new_epoch_is_a_full_backup
 run_test "-B chains a new epoch from another one"                  test_branch_from_another_epoch
 run_test "-B with no snapshot to branch from fails"                test_branch_epoch_missing_is_an_error
+run_test "incrementals work on a subvol= mount"                    test_incremental_backup_on_a_subvol_mount
+run_test "incrementals work on the top-level subvolume"            test_incremental_backup_of_the_top_level_subvolume
+run_test "epoch names sharing a prefix stay separate"              test_epoch_names_that_share_a_prefix_stay_separate
 run_test "a failing btrfs send deletes the new snapshot"           test_btrfs_send_failure_is_caught
 run_test "a failing snapshot leaves nothing behind"                test_snapshot_failure_leaves_nothing_behind
 run_test "a missing dependency exits 3"                            test_missing_dependency_exits_3
