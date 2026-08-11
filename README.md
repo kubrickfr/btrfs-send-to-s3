@@ -13,11 +13,14 @@ These scripts rely on well known command line tools and the AWS CLI:
 * age (or [rage](https://github.com/str4d/rage/) symlinked to `age` binary in PATH)
 * btrfs-tools
 * openssl
+* flock (from util-linux)
 
 # Design
 Rather than dealing with the complexity of custom file formats and metadata files, we use exclusively the state managed by btrfs-tools and file name conventions on S3.
 
 As such if you want to change the format (compression, encryption, file container, etc.), please start a new backup _epoch_ so as not to mix the two.
+
+Only one backup runs at a time per subvolume, whatever the epoch: a run takes an exclusive lock (in `/run/lock`, or `$TMPDIR` if that is not writable) and gives up with a return value of 1 if another already holds it. Two runs at once could otherwise pick the same parent snapshot and produce two branches of the same chain, which restores badly. Backups are also refused if the clock has gone backwards since the last snapshot, because restoring replays the sequences in numerical order.
 
 Snapshots live in `.stream_backup_<epoch>/` inside the subvolume, named after the second they were taken in. A new snapshot is created in `.stream_backup_<epoch>/.incomplete/` and only moved next to the others once every chunk *and* the completion marker have reached S3. That is what makes an interrupted backup safe: the next run can only ever chain from a snapshot whose upload finished, because a sequence with no completion marker is skipped when restoring, and anything chained from it could not be restored either. A snapshot found in `.incomplete/` at the start of a run is reported and deleted.
 

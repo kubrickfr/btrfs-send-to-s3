@@ -170,6 +170,26 @@ function latest_snapshot () {
   printf '%s\n' "${newest}"
 }
 
+# One run at a time per subvolume, and per subvolume rather than per epoch: with
+# -B a run in one epoch reads a snapshot belonging to another, and with -d a run
+# deletes one. The lock is held by the whole process tree, so a run whose upload
+# is stuck still counts as a run in progress.
+LOCK_DIR=/run/lock
+if [ ! -d "${LOCK_DIR}" ] || [ ! -w "${LOCK_DIR}" ]; then
+  LOCK_DIR=${TMPDIR:-/tmp}
+fi
+
+LOCK_NAME=${SUBV%/}
+LOCK_FILE=${LOCK_DIR}/stream_backup${LOCK_NAME//\//_}.lock
+
+exec 9>"${LOCK_FILE}" || exit 1
+
+if ! flock -n 9; then
+  echo "ERROR: another stream_backup.sh run is already working on ${SUBV}" >&2
+  echo "       (lock file ${LOCK_FILE}). Refusing to run two at once." >&2
+  exit 1
+fi
+
 aws s3 ls s3://${BUCKET}/${PREFIX} >/dev/null 2>&1 \
   && echo "SECURITY WARNING: current AWS IAM entity is allowed to list bucket contents! This can allow an attacker using the same identity to overwrite files and ruin your backups!" >&2
 
@@ -209,6 +229,17 @@ if [ -z "${LAST_SNAPSHOT}" ] && [ -n "${SOURCE_EPOCH}" ]; then
     exit 1
   fi
   SNAPSHOT_FROM_OTHER_EPOCH=true
+fi
+
+# Restoring replays sequences in the order of these numbers, so a snapshot that
+# sorts before the one it was made from could never be restored.
+if [ -n "${LAST_SNAPSHOT}" ] && [ "${SEQ}" -le "${LAST_SNAPSHOT}" ]; then
+  echo "ERROR: this run's sequence number (${SEQ}) is not newer than the last" >&2
+  echo "       snapshot's (${LAST_SNAPSHOT}). The clock has gone backwards, or" >&2
+  echo "       a backup has already been taken this second. Restoring replays" >&2
+  echo "       sequences in numerical order, so this backup could not be" >&2
+  echo "       restored after its own parent. Fix the clock and run again." >&2
+  exit 1
 fi
 
 SEND_ARGS=()
