@@ -21,6 +21,7 @@ if [ ! -x "${SPLIT_SHELL}" ]; then
   exit 3
 fi
 
+SEND_LOG=""
 DELETE_PREVIOUS=false
 CHUNK_SIZE="512M"
 SOURCE_EPOCH=""
@@ -103,6 +104,9 @@ fi
 
 function cleanup () {
   echo "Something went wrong, attempting to clean-up temporary files & snapshots" >&2
+  if [ -n "${SEND_LOG}" ]; then
+    rm -f -- "${SEND_LOG}"
+  fi
   btrfs subvolume delete ${NEW_SNAPSHOT}
   exit 2
 }
@@ -150,20 +154,28 @@ btrfs subvolume snapshot -r ${SUBV} ${NEW_SNAPSHOT} || exit 1
 trap cleanup ERR
 trap cleanup INT
 
+SEND_LOG=$(mktemp) || cleanup
+
 S3_SEQ_URL="s3://${BUCKET}/${PREFIX}/${EPOCH}/${SEQ_SALTED}"
 export RECIPIENTS_FILE S3_SEQ_URL SCLASS
 
-# The filter is quoted so that the values reach it through the environment
-# rather than being pasted into a command line that runs as root.
-eval ${BTRFS_COMMAND} 2>/dev/null \
+# stdout is the backup itself, and btrfs send writes progress as well as errors
+# to stderr, so its stderr goes to a file and is shown only on failure.
+if ! eval ${BTRFS_COMMAND} 2>"${SEND_LOG}" \
 	| lz4 \
 	| mbuffer -m ${CHUNK_SIZE} -q \
 	| SHELL="${SPLIT_SHELL}" split -b ${CHUNK_SIZE} --suffix-length 4 --filter \
 	'set -o pipefail; age -R "${RECIPIENTS_FILE}" | aws s3 cp - "${S3_SEQ_URL}/${FILE}" --storage-class "${SCLASS}"'
-
-if [ "${PIPESTATUS}" != "0" ]; then
+then
+  STATUS=("${PIPESTATUS[@]}")
+  echo "ERROR: the backup stream failed (btrfs send=${STATUS[0]} lz4=${STATUS[1]}" \
+       "mbuffer=${STATUS[2]} split, age or aws=${STATUS[3]})" >&2
+  cat -- "${SEND_LOG}" >&2
   cleanup
 fi
+
+rm -f -- "${SEND_LOG}"
+SEND_LOG=""
 
 # We only write the subvolume information to S3 at the end, as a marker of completion of the backup
 # having the subvolume information might help debuging tricky situations
