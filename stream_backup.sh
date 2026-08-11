@@ -1,5 +1,12 @@
 #!/bin/bash
 #
+# Before anything else: the shebang can be bypassed with "sh stream_backup.sh",
+# and everything below assumes bash, starting with $EUID.
+if [ -z "${BASH_VERSION}" ]; then
+  echo "Please run with bash" >&2
+  exit 3
+fi
+
 set -o pipefail
 
 if [ "$EUID" -ne 0 ]
@@ -117,7 +124,14 @@ aws s3 ls s3://${BUCKET}/${PREFIX} >/dev/null 2>&1 \
 SEQ=$(date +%s)
 
 # Salting the file names in S3 is important as to prevent malevolent overwriting
-SEQ_SALTED=${SEQ}_$(openssl rand -hex 8)
+SALT=$(openssl rand -hex 8)
+
+if [ -z "${SALT}" ]; then
+  echo "ERROR: could not generate a random salt for the object names" >&2
+  exit 1
+fi
+
+SEQ_SALTED=${SEQ}_${SALT}
 
 SUBV_INFO=$(btrfs subvolume show ${SUBV})
 SUBV_PREFIX=$(echo "${SUBV_INFO}" | head -n1)
