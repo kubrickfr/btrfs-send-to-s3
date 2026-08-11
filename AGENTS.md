@@ -77,8 +77,10 @@ sitting in users' buckets:
   wrong state", which an exit-code-only assertion cannot catch.
 - Never run the real scripts against a real filesystem or real AWS while developing.
 - The mocks cannot cover btrfs's own semantics — how snapshot paths are reported for the various
-  mount layouts, or the top-level subvolume (id 5). Verify anything that depends on those against a
-  real btrfs filesystem.
+  mount layouts, or the top-level subvolume (id 5). `sudo ./tests/integration.sh` covers the parts
+  that matter on a real filesystem (a loopback image, real btrfs, everything else still stubbed).
+  It needs root, so it is not part of CI: run it by hand before changing how snapshots are created,
+  promoted or chained.
 - Run `shellcheck` on anything you modify.
 - Documentation is part of the product: the README's exit-code table and security guidance, and
   everything in `examples/`, are the reference deployment. Change them in the same commit as the
