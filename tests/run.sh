@@ -42,9 +42,8 @@ setup () {
   : >"${LOG}"
   echo "age1exampleexamplerecipientkey" >"${WORK}/recipients.txt"
   echo "AGE-SECRET-KEY-EXAMPLE" >"${WORK}/identity.txt"
-  # check_deps.sh refuses to run unless $SHELL names bash, so the suite cannot
-  # run under a zsh or sh login shell without this.
-  export SHELL=/bin/bash
+  # What cron sets, and therefore what the scripts have to cope with.
+  export SHELL=/bin/sh
   unset FAIL_STAGE FAIL_CHUNK FS_PREFIX AWS_LS_OK AWS_LIST_FAIL AWS_ARCHIVED \
         AWS_HEAD_ERROR AGE_UNDECRYPTABLE NESTED_SUBVOLS STREAM_BYTES TEST_SALT \
         TEST_NOW
@@ -233,6 +232,71 @@ test_missing_dependency_exits_3 () {
   return 0
 }
 
+# systemd timers pass no SHELL at all, and cron passes /bin/sh: neither must
+# stop a backup, and neither must change how the split filter behaves.
+test_backup_works_without_a_shell_variable () {
+  env -u SHELL PATH="${TESTS_DIR}/stubs:${PATH}" \
+    TEST_SUBV="${TEST_SUBV}" S3ROOT="${S3ROOT}" LOG="${LOG}" \
+    "${REPO_DIR}/stream_backup.sh" \
+      -r "${WORK}/recipients.txt" -b "${BUCKET}" -p "${PREFIX}" \
+      -s "${TEST_SUBV}" -c STANDARD -e first \
+    >"${WORK}/stdout" 2>"${WORK}/stderr"
+  assert_status "$?" 0 || return 1
+  assert_equal "$(uploaded | tail -n1)" \
+               "${BUCKET}/${PREFIX}/first/1_00000000deadbeef/snapshot_info.dat" || return 1
+  return 0
+}
+
+test_running_under_a_non_bash_shell_is_refused () {
+  local shell=""
+  local candidate
+  for candidate in dash ash sh; do
+    command -v "${candidate}" >/dev/null 2>&1 || continue
+    [ -z "$("${candidate}" -c 'echo ${BASH_VERSION}' 2>/dev/null)" ] || continue
+    shell=${candidate}
+    break
+  done
+  if [ -z "${shell}" ]; then
+    echo "  (skipped, every available sh is bash): ${CURRENT}"
+    return 1
+  fi
+  PATH="${TESTS_DIR}/stubs:${PATH}" "${shell}" "${REPO_DIR}/stream_backup.sh" \
+    >"${WORK}/stdout" 2>"${WORK}/stderr"
+  assert_status "$?" 3 || return 1
+  return 0
+}
+
+# check_deps.sh only uses shell builtins, so it can be run with a PATH holding
+# nothing but the stubs, which is the only way to make a command truly absent.
+test_check_deps_reports_a_missing_openssl () {
+  local bin="${WORK}/bin"
+  mkdir -p "${bin}"
+  local stub
+  for stub in "${TESTS_DIR}"/stubs/*; do
+    [ "$(basename -- "${stub}")" = openssl ] && continue
+    ln -s "${stub}" "${bin}/"
+  done
+  # The tools with no stub of their own still have to be findable.
+  local real
+  for real in split sed; do
+    ln -s "$(command -v "${real}")" "${bin}/"
+  done
+  PATH="${bin}" "${REPO_DIR}/check_deps.sh" >"${WORK}/stdout" 2>"${WORK}/stderr"
+  assert_status "$?" 3 || return 1
+  assert_contains "$(cat "${WORK}/stderr")" "openssl" || return 1
+  return 0
+}
+
+# Without a salt the object names become guessable, which is the whole of the
+# defence against a compromised host overwriting earlier backups.
+test_a_failing_salt_stops_the_backup () {
+  FAIL_STAGE=openssl backup -c STANDARD -e first
+  local status=$?
+  [ "${status}" -eq 0 ] && { fail "the backup succeeded without a salt"; return 1; }
+  assert_equal "$(uploaded)" "" || return 1
+  return 0
+}
+
 test_no_arguments_prints_usage () {
   PATH="${TESTS_DIR}/stubs:${PATH}" "${REPO_DIR}/stream_backup.sh" \
     >"${WORK}/stdout" 2>"${WORK}/stderr"
@@ -408,6 +472,10 @@ run_test "-B with no snapshot to branch from fails"                test_branch_e
 run_test "a failing btrfs send deletes the new snapshot"           test_btrfs_send_failure_is_caught
 run_test "a failing snapshot leaves nothing behind"                test_snapshot_failure_leaves_nothing_behind
 run_test "a missing dependency exits 3"                            test_missing_dependency_exits_3
+run_test "a backup works with no SHELL in the environment"         test_backup_works_without_a_shell_variable
+run_test "running under a non-bash shell is refused"               test_running_under_a_non_bash_shell_is_refused
+run_test "check_deps reports a missing openssl"                    test_check_deps_reports_a_missing_openssl
+run_test "a failing salt stops the backup"                         test_a_failing_salt_stops_the_backup
 run_test "no arguments prints the usage"                           test_no_arguments_prints_usage
 run_test "an unknown subvolume is an error"                        test_unknown_subvolume_is_an_error
 run_test "a listable bucket raises a security warning"             test_warns_when_the_identity_can_list_the_bucket
