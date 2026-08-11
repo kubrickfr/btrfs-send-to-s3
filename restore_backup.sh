@@ -121,7 +121,7 @@ function chunk_state () {
           --query '[StorageClass,Restore]' --output text 2>&1)
   status=$?
 
-  if [ ${status} -ne 0 ]; then
+  if [ "${status}" -ne 0 ]; then
     case ${out} in
       *"(404)"*|*"Not Found"*)
         printf 'missing\n'

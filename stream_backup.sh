@@ -114,7 +114,7 @@ Usage:
                 incremental
   -c class    : S3 storage class, see "aws s3 cp help" for
                 supported classes
-  -s path     : path of the subvolume to make a shapshot and backup
+  -s path     : path of the subvolume to make a snapshot and backup
                 of
   [-B epoch]  : use as a starting point when starting a new epoch.
                 This is useful to break long chains of incremental
@@ -124,7 +124,7 @@ Usage:
   [-m size]   : how much of the stream to hold in memory while
                 uploading. Default to 512M, K,M,G suffixes are
                 supported
-  [-d]        : when the upload succeedes, delete the older snapshot
+  [-d]        : when the upload succeeds, delete the older snapshot
                 defaults to keep the old snapshot. Does not delete
                 the previous snapshot if it is in a different epoch
 EOF
@@ -228,7 +228,7 @@ if ! flock -n 9; then
   exit 1
 fi
 
-aws s3 ls s3://${BUCKET}/${PREFIX} >/dev/null 2>&1 \
+aws s3 ls "s3://${BUCKET}/${PREFIX}" >/dev/null 2>&1 \
   && echo "SECURITY WARNING: current AWS IAM entity is allowed to list bucket contents! This can allow an attacker using the same identity to overwrite files and ruin your backups!" >&2
 
 SEQ=$(date +%s)
@@ -339,7 +339,7 @@ export RECIPIENTS_FILE S3_SEQ_URL SCLASS EXPECTED_SIZE
 if ! btrfs send "${SEND_ARGS[@]}" 2>"${SEND_LOG}" \
 	| lz4 \
 	| mbuffer -m "${MBUFFER_SIZE}" -q \
-	| SHELL="${SPLIT_SHELL}" split -b ${CHUNK_SIZE} --suffix-length 4 --filter \
+	| SHELL="${SPLIT_SHELL}" split -b "${CHUNK_SIZE}" --suffix-length 4 --filter \
 	'set -o pipefail
 	 age -R "${RECIPIENTS_FILE}" \
 	   | aws s3 cp - "${S3_SEQ_URL}/${FILE}" --storage-class "${SCLASS}" \
@@ -386,7 +386,7 @@ rmdir -- "${STAGE_DIR}" 2>/dev/null
 # The backup is already safe in S3 by now, so failing here is not fatal.
 if     [ "${DELETE_PREVIOUS}" == true ] \
     && [ -n "${LAST_SNAPSHOT}" ] \
-    && [ ${SNAPSHOT_FROM_OTHER_EPOCH} == false ]; then
+    && [ "${SNAPSHOT_FROM_OTHER_EPOCH}" == false ]; then
   if ! btrfs subvolume delete "${PARENT_PATH}"; then
     echo "WARNING: the backup completed, but the snapshot it was made from" >&2
     echo "         (${PARENT_PATH}) could not be deleted. Snapshots will pile" >&2
