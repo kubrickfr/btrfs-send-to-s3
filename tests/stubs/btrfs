@@ -111,9 +111,15 @@ case "$1 $2" in
     shift 2
     target=${1%/}
     [ -d "${target}" ] || { echo "ERROR: not a subvolume: ${target}" >&2; exit 1; }
+    # Scoped to snapshots so that the subvolume existence check still succeeds:
+    # what this simulates is a failure to generate the completion marker.
     if [ "${FAIL_STAGE}" = show ]; then
-      echo "ERROR: cannot access '${target}'" >&2
-      exit 1
+      case ${target} in
+        *"/.stream_backup_"*)
+          echo "ERROR: cannot access '${target}'" >&2
+          exit 1
+          ;;
+      esac
     fi
     fs_path "${target}"
     printf '\tUUID:\t\t\t11111111-2222-3333-4444-555555555555\n'
