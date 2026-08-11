@@ -1,12 +1,12 @@
 # Crontab to take daily and monthly snapshot taking advantage of the branched
-# feature so that the maximum chain lenth is 12+30=42 on December 31st.
+# feature so that the maximum chain length is 12+30=42 on December 31st.
 # It tries to optimize the cost of storage assuming you delete old epochs on
 # the 4th of each month, taking into account early deletion fees.
 # It also assumes that none of these operations take more than 24h and that
 # 2100GMT is the beginning of your "quiet" hours.
 
 #
-# You if you rely on emails to monitor failures, you could wrap all these
+# If you rely on emails to monitor failures, you could wrap all these
 # commands with https://habilis.net/cronic/ to avoid sending emails on success
 #
 
@@ -25,7 +25,7 @@ SUBVOLUME=/path/to/mounted/btrfs/subvolume
 # |  |  |  |  .---- day of week (0 - 6) (Sunday=0 or 7) OR sun,mon,tue,wed,thu,fri,sat
 # |  |  |  |  |
 
-# Do a montly scrub, towards the end of the month
+# Do a monthly scrub, towards the end of the month
 0 21 27    *   *  btrfs scrub start -B ${SUBVOLUME}
 
 # Every month, perform an incremental backup relative to the previous month.
@@ -34,7 +34,7 @@ SUBVOLUME=/path/to/mounted/btrfs/subvolume
 # On January 1st, get rid of last year's snapshot
 1 0   1    1   * btrfs subvolume delete ${SUBVOLUME}/.stream_backup_monthly-$(date -d '-1 day' +\%Y)/* && rmdir ${SUBVOLUME}/.stream_backup_monthly-$(date -d '-1 day' +\%Y)
 
-# Every day (except the first day of the month, as we take a montly snapshot on
+# Every day (except the first day of the month, as we take a monthly snapshot on
 # that day), perform an incremental backup relative to the previous day. On the
 # second day of the month, it will start a new epoch automatically, branched from
 # the current monthly backup taken the day before

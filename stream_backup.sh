@@ -356,7 +356,7 @@ rm -f -- "${SEND_LOG}"
 SEND_LOG=""
 
 # We only write the subvolume information to S3 at the end, as a marker of completion of the backup
-# having the subvolume information might help debuging tricky situations.
+# having the subvolume information might help debugging tricky situations.
 SNAPSHOT_INFO=$(btrfs subvolume show "${SNAPSHOT_STAGED}")
 
 if [ -z "${SNAPSHOT_INFO}" ]; then
