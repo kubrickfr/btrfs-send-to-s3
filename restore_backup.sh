@@ -14,13 +14,13 @@ if [ "$EUID" -ne 0 ]
   exit 1
 fi
 
-$(dirname "$0")/check_deps.sh || exit 3
+"$(dirname "$0")/check_deps.sh" || exit 3
 
 DELETE_PREVIOUS=false
 
-OPTSTRING="b:p:e:i:s:d"
+OPTSTRING=":b:p:e:i:s:d"
 
-while getopts ${OPTSTRING} opt; do
+while getopts "${OPTSTRING}" opt; do
   case ${opt} in
     b)
       echo "Bucket: ${OPTARG}"
@@ -46,12 +46,23 @@ while getopts ${OPTSTRING} opt; do
       echo "Delete all restored snapshots but the last one"
       DELETE_PREVIOUS=true
       ;;
+    :)
+      echo "Option -${OPTARG} needs an argument." >&2
+      exit 1
+      ;;
     ?)
-      echo "Invalid option: -${OPTARG}."
+      echo "Invalid option: -${OPTARG}." >&2
       exit 1
       ;;
   esac
 done
+
+shift $((OPTIND - 1))
+
+if [ $# -ne 0 ]; then
+  echo "Unexpected argument: $1" >&2
+  exit 1
+fi
 
 if [ "" == "$IDENTITY_FILE" ] || [ "" == "$BUCKET" ] || [ "" == "$PREFIX" ] || [ "" == "$EPOCH" ] || [ "" == "$DEST" ]; then
 cat << EOF

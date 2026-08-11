@@ -14,7 +14,7 @@ if [ "$EUID" -ne 0 ]
   exit 1
 fi
 
-$(dirname "$0")/check_deps.sh || exit 3
+"$(dirname "$0")/check_deps.sh" || exit 3
 
 # GNU split runs its --filter through $SHELL, which is the login shell of
 # whoever started us and need not even be bash. Pin it to the interpreter
@@ -37,9 +37,9 @@ CHUNK_SIZE="512M"
 SOURCE_EPOCH=""
 SNAPSHOT_FROM_OTHER_EPOCH=false
 
-OPTSTRING="r:b:p:e:c:s:B:S:d"
+OPTSTRING=":r:b:p:e:c:s:B:S:d"
 
-while getopts ${OPTSTRING} opt; do
+while getopts "${OPTSTRING}" opt; do
   case ${opt} in
     r)
       echo "Recipients file path: ${OPTARG}"
@@ -77,12 +77,23 @@ while getopts ${OPTSTRING} opt; do
       echo "Will delete previous snapshot in the same epoch"
       DELETE_PREVIOUS=true
       ;;
+    :)
+      echo "Option -${OPTARG} needs an argument." >&2
+      exit 1
+      ;;
     ?)
-      echo "Invalid option: -${OPTARG}."
+      echo "Invalid option: -${OPTARG}." >&2
       exit 1
       ;;
   esac
 done
+
+shift $((OPTIND - 1))
+
+if [ $# -ne 0 ]; then
+  echo "Unexpected argument: $1" >&2
+  exit 1
+fi
 
 if [ "" == "$RECIPIENTS_FILE" ] || [ "" == "$BUCKET" ] || [ "" == "$PREFIX" ] || [ "" == "$EPOCH" ] || [ "" == "$SCLASS" ] || [ "" == "$SUBV" ]; then
 cat << EOF
