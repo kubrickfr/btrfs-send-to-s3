@@ -25,8 +25,9 @@ fs_path () {
   # Filesystem-tree path of $1, the way 'btrfs subvolume show' prints it: the
   # path relative to the root of the filesystem, which for the top-level
   # subvolume (id 5) is reported as "/".
-  local prefix=${FS_PREFIX:-$(basename -- "${TEST_SUBV}")}
-  local rel=${1#"${TEST_SUBV}"}
+  local prefix rel
+  prefix=${FS_PREFIX:-$(basename -- "${TEST_SUBV}")}
+  rel=${1#"${TEST_SUBV}"}
   rel=${rel#/}
   if [ -z "${rel}" ]; then
     printf '%s\n' "${prefix}"
@@ -137,9 +138,11 @@ case "$1 $2" in
     printf '\tUUID:\t\t\t11111111-2222-3333-4444-555555555555\n'
     printf '\tCreation time:\t\t2026-01-01 00:00:00 +0000\n'
     printf '\tSnapshot(s):\n'
-    for d in "${TEST_SUBV}"/.stream_backup_*/*/; do
+    # Staged snapshots are listed too: btrfs knows nothing about which directory
+    # we keep a snapshot in, so nothing here may either.
+    for d in "${TEST_SUBV}"/.stream_backup_*/*/ "${TEST_SUBV}"/.stream_backup_*/.incomplete/*/; do
       [ -d "${d}" ] || continue
-      case ${d} in *"/.incomplete/"*) continue ;; esac
+      case ${d} in */.incomplete/) continue ;; esac
       printf '\t\t\t\t%s\n' "$(fs_path "${d%/}")"
     done
     exit 0

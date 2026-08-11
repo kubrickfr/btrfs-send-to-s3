@@ -41,7 +41,7 @@ case ${service} in
           mkdir -p -- "${S3ROOT}/${bucket}/$(dirname -- "${key}")"
           cat >"${S3ROOT}/${bucket}/${key}"
           if [ "${FAIL_STAGE}" = aws ] && [ -n "${FAIL_CHUNK}" ] \
-             && [ "${key}" != "${key%${FAIL_CHUNK}}" ]; then
+             && [ "${key}" != "${key%"${FAIL_CHUNK}"}" ]; then
             rm -f -- "${S3ROOT}/${bucket}/${key}"
             echo "upload failed: An error occurred (AccessDenied)" >&2
             exit 1
@@ -102,7 +102,7 @@ case ${service} in
         exit 0
         ;;
       head-object)
-        if [ -n "${AWS_HEAD_ERROR}" ] && [ "${key}" != "${key%${AWS_HEAD_ERROR}}" ]; then
+        if [ -n "${AWS_HEAD_ERROR}" ] && [ "${key}" != "${key%"${AWS_HEAD_ERROR}"}" ]; then
           echo "An error occurred (503) when calling the HeadObject operation" >&2
           exit 254
         fi
@@ -110,7 +110,7 @@ case ${service} in
           echo "An error occurred (404) when calling the HeadObject operation: Not Found" >&2
           exit 254
         fi
-        if [ -n "${AWS_ARCHIVED}" ] && [ "${key}" != "${key%${AWS_ARCHIVED}}" ]; then
+        if [ -n "${AWS_ARCHIVED}" ] && [ "${key}" != "${key%"${AWS_ARCHIVED}"}" ]; then
           printf 'DEEP_ARCHIVE\tNone\n'
         else
           printf 'STANDARD\tNone\n'
