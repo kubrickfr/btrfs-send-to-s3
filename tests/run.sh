@@ -254,6 +254,95 @@ test_warns_when_the_identity_can_list_the_bucket () {
   return 0
 }
 
+# --------------------------------------------------- backup: failures mid-upload
+#
+# A failure here must never leave the completion marker in S3: that marker is
+# what tells a restore the sequence is whole.
+
+# A chunk upload that fails only once the whole chunk has been read is the shape
+# a multipart completion failure or an expiring credential takes.
+assert_upload_failure_is_reported () {
+  assert_status "$1" 2 || return 1
+  assert_equal "$(uploaded | grep -c snapshot_info.dat)" "0" || return 1
+  assert_equal "$(snapshots)" "" || return 1
+  return 0
+}
+
+test_failing_chunk_upload_fails_the_backup () {
+  STREAM_BYTES=4000 FAIL_STAGE=aws FAIL_CHUNK=xaaab \
+    backup -c STANDARD -e first -S 1000
+  assert_upload_failure_is_reported "$?" || return 1
+  return 0
+}
+
+test_failing_last_chunk_upload_fails_the_backup () {
+  STREAM_BYTES=4000 FAIL_STAGE=aws FAIL_CHUNK=xaaae \
+    backup -c STANDARD -e first -S 1000
+  assert_upload_failure_is_reported "$?" || return 1
+  return 0
+}
+
+test_failing_encryption_fails_the_backup () {
+  STREAM_BYTES=4000 FAIL_STAGE=age FAIL_CHUNK=xaaab \
+    backup -c STANDARD -e first -S 1000
+  assert_upload_failure_is_reported "$?" || return 1
+  return 0
+}
+
+test_failing_compression_fails_the_backup () {
+  FAIL_STAGE=lz4 backup -c STANDARD -e first
+  assert_upload_failure_is_reported "$?" || return 1
+  return 0
+}
+
+# mbuffer dying once its producers have finished gives split a clean EOF, so the
+# truncated stream looks like a complete one.
+test_a_killed_buffer_fails_the_backup () {
+  STREAM_BYTES=4000 FAIL_STAGE=mbuffer backup -c STANDARD -e first -S 1000
+  assert_upload_failure_is_reported "$?" || return 1
+  return 0
+}
+
+# Here every chunk uploads cleanly and only the marker's encryption fails, with
+# the upload of the resulting nothing succeeding.
+test_failing_marker_encryption_fails_the_backup () {
+  FAIL_STAGE=age backup -c STANDARD -e first
+  assert_status "$?" 2 || return 1
+  assert_equal "$(snapshots)" "" || return 1
+  return 0
+}
+
+test_failing_marker_generation_fails_the_backup () {
+  FAIL_STAGE=show backup -c STANDARD -e first
+  assert_status "$?" 2 || return 1
+  assert_equal "$(uploaded | grep -c snapshot_info.dat)" "0" || return 1
+  return 0
+}
+
+test_the_error_names_the_stage_that_failed () {
+  FAIL_STAGE=lz4 backup -c STANDARD -e first
+  assert_contains "$(cat "${WORK}/stderr")" "lz4=1" || return 1
+  return 0
+}
+
+# btrfs send's diagnostics are the only clue when a send fails, and stdout is
+# the backup itself, so they have to come back on stderr.
+test_a_failing_send_reports_its_error () {
+  FAIL_STAGE=send backup -c STANDARD -e first
+  assert_contains "$(cat "${WORK}/stderr")" "cannot find parent subvolume" || return 1
+  return 0
+}
+
+test_a_successful_backup_is_quiet_about_send () {
+  backup -c STANDARD -e first
+  assert_status "$?" 0 || return 1
+  # "At subvol ..." is normal progress chatter; cron should not see it.
+  case $(cat "${WORK}/stderr") in
+    *"At subvol"*) fail "btrfs send progress leaked to stderr on a good run"; return 1 ;;
+  esac
+  return 0
+}
+
 # ------------------------------------------------------------------------ restore
 
 test_restore_replays_every_sequence_in_order () {
@@ -322,6 +411,18 @@ run_test "a missing dependency exits 3"                            test_missing_
 run_test "no arguments prints the usage"                           test_no_arguments_prints_usage
 run_test "an unknown subvolume is an error"                        test_unknown_subvolume_is_an_error
 run_test "a listable bucket raises a security warning"             test_warns_when_the_identity_can_list_the_bucket
+
+echo "Running the backup failure tests"
+run_test "a failing chunk upload fails the backup"                 test_failing_chunk_upload_fails_the_backup
+run_test "a failing last chunk upload fails the backup"            test_failing_last_chunk_upload_fails_the_backup
+run_test "a failing encryption fails the backup"                   test_failing_encryption_fails_the_backup
+run_test "a failing compression fails the backup"                  test_failing_compression_fails_the_backup
+run_test "a killed buffer fails the backup"                        test_a_killed_buffer_fails_the_backup
+run_test "a failing marker encryption fails the backup"            test_failing_marker_encryption_fails_the_backup
+run_test "a failing marker generation fails the backup"            test_failing_marker_generation_fails_the_backup
+run_test "the error names the stage that failed"                   test_the_error_names_the_stage_that_failed
+run_test "a failing send reports its error"                        test_a_failing_send_reports_its_error
+run_test "a successful backup is quiet about send"                 test_a_successful_backup_is_quiet_about_send
 
 echo "Running the restore tests"
 run_test "restore replays every sequence in order"                 test_restore_replays_every_sequence_in_order
