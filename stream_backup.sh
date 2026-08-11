@@ -1,5 +1,12 @@
 #!/bin/bash
 #
+# Before anything else: the shebang can be bypassed with "sh stream_backup.sh",
+# and everything below assumes bash, starting with $EUID.
+if [ -z "${BASH_VERSION}" ]; then
+  echo "Please run with bash" >&2
+  exit 3
+fi
+
 set -o pipefail
 
 if [ "$EUID" -ne 0 ]
