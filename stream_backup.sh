@@ -1,11 +1,25 @@
 #!/bin/bash
 #
+set -o pipefail
+
 if [ "$EUID" -ne 0 ]
   then echo "Please run as root"
   exit 1
 fi
 
 $(dirname "$0")/check_deps.sh || exit 3
+
+# GNU split runs its --filter through $SHELL, which is the login shell of
+# whoever started us and need not even be bash. Pin it to the interpreter
+# running this script so the filter's own error handling behaves predictably.
+SPLIT_SHELL=${BASH}
+if [ ! -x "${SPLIT_SHELL}" ]; then
+  SPLIT_SHELL=$(command -v bash)
+fi
+if [ ! -x "${SPLIT_SHELL}" ]; then
+  echo "command not found: bash (needed by 'split --filter')" >&2
+  exit 3
+fi
 
 DELETE_PREVIOUS=false
 CHUNK_SIZE="512M"
@@ -136,11 +150,16 @@ btrfs subvolume snapshot -r ${SUBV} ${NEW_SNAPSHOT} || exit 1
 trap cleanup ERR
 trap cleanup INT
 
+S3_SEQ_URL="s3://${BUCKET}/${PREFIX}/${EPOCH}/${SEQ_SALTED}"
+export RECIPIENTS_FILE S3_SEQ_URL SCLASS
+
+# The filter is quoted so that the values reach it through the environment
+# rather than being pasted into a command line that runs as root.
 eval ${BTRFS_COMMAND} 2>/dev/null \
 	| lz4 \
 	| mbuffer -m ${CHUNK_SIZE} -q \
-	| split -b ${CHUNK_SIZE} --suffix-length 4 --filter \
-	"age -R ${RECIPIENTS_FILE} | aws s3 cp - s3://${BUCKET}/${PREFIX}/${EPOCH}/${SEQ_SALTED}/\$FILE --storage-class ${SCLASS}; exit \${PIPESTATUS}"
+	| SHELL="${SPLIT_SHELL}" split -b ${CHUNK_SIZE} --suffix-length 4 --filter \
+	'set -o pipefail; age -R "${RECIPIENTS_FILE}" | aws s3 cp - "${S3_SEQ_URL}/${FILE}" --storage-class "${SCLASS}"'
 
 if [ "${PIPESTATUS}" != "0" ]; then
   cleanup
