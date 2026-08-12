@@ -1,11 +1,8 @@
 #!/bin/bash
 #
-# Before anything else: the shebang can be bypassed with "sh stream_backup.sh",
-# and everything below assumes bash, starting with $EUID.
-if [ -z "${BASH_VERSION}" ]; then
-  echo "Please run with bash" >&2
-  exit 3
-fi
+# The shebang can be bypassed with "sh stream_backup.sh", and everything below
+# assumes bash, starting with $EUID.
+[ -n "${BASH_VERSION}" ] || { echo "Please run with bash" >&2; exit 3; }
 
 set -o pipefail
 
@@ -16,17 +13,18 @@ fi
 
 "$(dirname "$0")/check_deps.sh" || exit 3
 
+function die () {
+  local code=$1
+  shift
+  printf '%s\n' "$@" >&2
+  exit "${code}"
+}
+
 # GNU split runs its --filter through $SHELL, which is the login shell of
 # whoever started us and need not even be bash. Pin it to the interpreter
 # running this script so the filter's own error handling behaves predictably.
-SPLIT_SHELL=${BASH}
-if [ ! -x "${SPLIT_SHELL}" ]; then
-  SPLIT_SHELL=$(command -v bash)
-fi
-if [ ! -x "${SPLIT_SHELL}" ]; then
-  echo "command not found: bash (needed by 'split --filter')" >&2
-  exit 3
-fi
+SPLIT_SHELL=${BASH:-$(command -v bash)}
+[ -x "${SPLIT_SHELL}" ] || die 3 "command not found: bash (needed by 'split --filter')"
 
 SEND_LOG=""
 SNAPSHOT_STAGED=""
@@ -83,22 +81,16 @@ while getopts "${OPTSTRING}" opt; do
       DELETE_PREVIOUS=true
       ;;
     :)
-      echo "Option -${OPTARG} needs an argument." >&2
-      exit 1
+      die 1 "Option -${OPTARG} needs an argument."
       ;;
     ?)
-      echo "Invalid option: -${OPTARG}." >&2
-      exit 1
+      die 1 "Invalid option: -${OPTARG}."
       ;;
   esac
 done
 
 shift $((OPTIND - 1))
-
-if [ $# -ne 0 ]; then
-  echo "Unexpected argument: $1" >&2
-  exit 1
-fi
+[ $# -eq 0 ] || die 1 "Unexpected argument: $1"
 
 if [ "" == "$RECIPIENTS_FILE" ] || [ "" == "$BUCKET" ] || [ "" == "$PREFIX" ] || [ "" == "$EPOCH" ] || [ "" == "$SCLASS" ] || [ "" == "$SUBV" ]; then
 cat << EOF
@@ -213,20 +205,11 @@ function latest_snapshot () {
 # deletes one. The lock is held by the whole process tree, so a run whose upload
 # is stuck still counts as a run in progress.
 LOCK_DIR=/run/lock
-if [ ! -d "${LOCK_DIR}" ] || [ ! -w "${LOCK_DIR}" ]; then
-  LOCK_DIR=${TMPDIR:-/tmp}
-fi
-
+[ -w "${LOCK_DIR}" ] || LOCK_DIR=${TMPDIR:-/tmp}
 LOCK_NAME=${SUBV%/}
-LOCK_FILE=${LOCK_DIR}/stream_backup${LOCK_NAME//\//_}.lock
-
-exec 9>"${LOCK_FILE}" || exit 1
-
-if ! flock -n 9; then
-  echo "ERROR: another stream_backup.sh run is already working on ${SUBV}" >&2
-  echo "       (lock file ${LOCK_FILE}). Refusing to run two at once." >&2
-  exit 1
-fi
+exec 9>"${LOCK_DIR}/stream_backup${LOCK_NAME//\//_}.lock" || exit 1
+flock -n 9 \
+  || die 1 "ERROR: another stream_backup.sh run is already working on ${SUBV}. Refusing to run two at once."
 
 aws s3 ls "s3://${BUCKET}/${PREFIX}" >/dev/null 2>&1 \
   && echo "SECURITY WARNING: current AWS IAM entity is allowed to list bucket contents! This can allow an attacker using the same identity to overwrite files and ruin your backups!" >&2
@@ -234,32 +217,16 @@ aws s3 ls "s3://${BUCKET}/${PREFIX}" >/dev/null 2>&1 \
 SEQ=$(date +%s)
 
 # Salting the file names in S3 is important as to prevent malevolent overwriting
-SALT=$(openssl rand -hex 8)
+SEQ_SALTED=${SEQ}_$(openssl rand -hex 8)
+[ "${SEQ_SALTED}" != "${SEQ}_" ] || die 1 "ERROR: could not generate a random salt for the object names"
 
-if [ -z "${SALT}" ]; then
-  echo "ERROR: could not generate a random salt for the object names" >&2
-  exit 1
-fi
+btrfs subvolume show "${SUBV}" >/dev/null 2>&1 || die 1 "Subvolume not found"
 
-SEQ_SALTED=${SEQ}_${SALT}
-
-if ! btrfs subvolume show "${SUBV}" >/dev/null 2>&1; then
-  echo "Subvolume not found" >&2
-  exit 1
-fi
-
-# Snapshots are not recursive, and neither is the stream: a subvolume nested
-# inside this one arrives as an empty directory. Docker's btrfs driver, snapper
-# and LXD all create them under paths people back up.
-NESTED=$(btrfs subvolume list -o "${SUBV}" 2>/dev/null \
-           | grep -v '/\.stream_backup_' || true)
-
-if [ -n "${NESTED}" ]; then
-  echo "WARNING: ${SUBV} contains nested subvolumes. They will be backed up as" >&2
-  echo "         EMPTY directories, because snapshots do not descend into them." >&2
-  echo "         Back them up separately if you need their contents:" >&2
-  printf '%s\n' "${NESTED}" >&2
-fi
+# Snapshots are not recursive: a subvolume nested inside this one is backed up
+# as an empty directory.
+NESTED=$(btrfs subvolume list -o "${SUBV}" 2>/dev/null | grep -v '/\.stream_backup_' || true)
+[ -z "${NESTED}" ] \
+  || printf 'WARNING: nested subvolumes will be backed up as EMPTY directories:\n%s\n' "${NESTED}" >&2
 
 EPOCH_DIR=${SUBV%/}/.stream_backup_${EPOCH}
 # A snapshot is only moved out of here once its upload has completed, so
@@ -275,22 +242,14 @@ LAST_SNAPSHOT=$(latest_snapshot "${EPOCH_DIR}")
 if [ -z "${LAST_SNAPSHOT}" ] && [ -n "${SOURCE_EPOCH}" ]; then
   PARENT_DIR=${SUBV%/}/.stream_backup_${SOURCE_EPOCH}
   LAST_SNAPSHOT=$(latest_snapshot "${PARENT_DIR}")
-  if [ -z "${LAST_SNAPSHOT}" ]; then
-    echo "ERROR: Neither the current epoch nor the branch epoch has an existing snapshot" >&2
-    exit 1
-  fi
+  [ -n "${LAST_SNAPSHOT}" ] \
+    || die 1 "ERROR: Neither the current epoch nor the branch epoch has an existing snapshot"
   SNAPSHOT_FROM_OTHER_EPOCH=true
 fi
 
-# Restoring replays sequences in the order of these numbers, so a snapshot that
-# sorts before the one it was made from could never be restored.
+# Restoring replays sequences in the order of these numbers.
 if [ -n "${LAST_SNAPSHOT}" ] && [ "${SEQ}" -le "${LAST_SNAPSHOT}" ]; then
-  echo "ERROR: this run's sequence number (${SEQ}) is not newer than the last" >&2
-  echo "       snapshot's (${LAST_SNAPSHOT}). The clock has gone backwards, or" >&2
-  echo "       a backup has already been taken this second. Restoring replays" >&2
-  echo "       sequences in numerical order, so this backup could not be" >&2
-  echo "       restored after its own parent. Fix the clock and run again." >&2
-  exit 1
+  die 1 "ERROR: sequence ${SEQ} is not newer than the last snapshot (${LAST_SNAPSHOT}): a backup ran this second already, or the clock has gone backwards"
 fi
 
 SEND_ARGS=()
@@ -311,16 +270,13 @@ trap 'on_signal TERM' TERM
 trap 'on_signal HUP' HUP
 trap 'exit 1' ERR
 
-if [ -d "${STAGE_DIR}" ]; then
-  for ORPHAN in "${STAGE_DIR}"/*; do
-    [ -e "${ORPHAN}" ] || continue
-    echo "WARNING: ${ORPHAN} was left behind by an interrupted backup." >&2
-    echo "         Its sequence in S3 was never completed and cannot be restored," >&2
-    echo "         so it cannot be used as a parent. Deleting it." >&2
-    btrfs subvolume delete "${ORPHAN}" >&2 \
-      || echo "WARNING: could not delete ${ORPHAN}, remove it by hand" >&2
-  done
-fi
+# Whatever is left in staging was interrupted mid-upload: its sequence has no
+# completion marker, so nothing may ever chain from it.
+for ORPHAN in "${STAGE_DIR}"/*; do
+  [ -e "${ORPHAN}" ] || continue
+  echo "WARNING: deleting ${ORPHAN}, left behind by an interrupted backup" >&2
+  btrfs subvolume delete "${ORPHAN}" >&2 || echo "WARNING: could not delete ${ORPHAN}, remove it by hand" >&2
+done
 
 mkdir -p -- "${STAGE_DIR}"
 btrfs subvolume snapshot -r "${SUBV}" "${SNAPSHOT_STAGED}" || exit 1
@@ -358,19 +314,10 @@ SEND_LOG=""
 # We only write the subvolume information to S3 at the end, as a marker of completion of the backup
 # having the subvolume information might help debugging tricky situations.
 SNAPSHOT_INFO=$(btrfs subvolume show "${SNAPSHOT_STAGED}")
+[ -n "${SNAPSHOT_INFO}" ] || die 2 "ERROR: btrfs subvolume show ${SNAPSHOT_STAGED} returned nothing"
 
-if [ -z "${SNAPSHOT_INFO}" ]; then
-  echo "ERROR: btrfs subvolume show ${SNAPSHOT_STAGED} returned nothing" >&2
-  exit 2
-fi
-
-if ! printf '%s\n' "${SNAPSHOT_INFO}" \
-  | age -R "${RECIPIENTS_FILE}" \
-  | aws s3 cp - "${S3_SEQ_URL}/snapshot_info.dat"
-then
-  echo "ERROR: could not upload the completion marker for ${SEQ_SALTED}" >&2
-  exit 2
-fi
+printf '%s\n' "${SNAPSHOT_INFO}" | age -R "${RECIPIENTS_FILE}" | aws s3 cp - "${S3_SEQ_URL}/snapshot_info.dat" \
+  || die 2 "ERROR: could not upload the completion marker for ${SEQ_SALTED}"
 
 # The sequence is complete in S3, so this snapshot is now a valid parent for the
 # next run and can leave the staging directory.

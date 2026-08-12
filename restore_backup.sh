@@ -1,11 +1,8 @@
 #!/bin/bash
 #
-# Before anything else: the shebang can be bypassed with "sh restore_backup.sh",
-# and everything below assumes bash, starting with $EUID.
-if [ -z "${BASH_VERSION}" ]; then
-  echo "Please run with bash" >&2
-  exit 3
-fi
+# The shebang can be bypassed with "sh restore_backup.sh", and everything below
+# assumes bash, starting with $EUID.
+[ -n "${BASH_VERSION}" ] || { echo "Please run with bash" >&2; exit 3; }
 
 set -o pipefail
 
@@ -15,6 +12,13 @@ if [ "$EUID" -ne 0 ]
 fi
 
 "$(dirname "$0")/check_deps.sh" || exit 3
+
+function die () {
+  local code=$1
+  shift
+  printf '%s\n' "$@" >&2
+  exit "${code}"
+}
 
 DELETE_PREVIOUS=false
 MBUFFER_SIZE="1G"
@@ -52,22 +56,16 @@ while getopts "${OPTSTRING}" opt; do
       DELETE_PREVIOUS=true
       ;;
     :)
-      echo "Option -${OPTARG} needs an argument." >&2
-      exit 1
+      die 1 "Option -${OPTARG} needs an argument."
       ;;
     ?)
-      echo "Invalid option: -${OPTARG}." >&2
-      exit 1
+      die 1 "Invalid option: -${OPTARG}."
       ;;
   esac
 done
 
 shift $((OPTIND - 1))
-
-if [ $# -ne 0 ]; then
-  echo "Unexpected argument: $1" >&2
-  exit 1
-fi
+[ $# -eq 0 ] || die 1 "Unexpected argument: $1"
 
 if [ "" == "$IDENTITY_FILE" ] || [ "" == "$BUCKET" ] || [ "" == "$PREFIX" ] || [ "" == "$EPOCH" ] || [ "" == "$DEST" ]; then
 cat << EOF
@@ -191,16 +189,11 @@ function fetch_chunks () {
   return 1
 }
 
-if ! SEQ_LIST=$(aws s3api list-objects-v2 --bucket "${BUCKET}" \
-      --prefix "${PREFIX}/${EPOCH}/" --delimiter '/' \
-      --query 'CommonPrefixes[].[Prefix]' --output text); then
-  echo "ERROR: could not list s3://${BUCKET}/${PREFIX}/${EPOCH}/" >&2
-  exit 1
-fi
-
+SEQ_LIST=$(aws s3api list-objects-v2 --bucket "${BUCKET}" --prefix "${PREFIX}/${EPOCH}/" \
+             --delimiter '/' --query 'CommonPrefixes[].[Prefix]' --output text) \
+  || die 1 "ERROR: could not list s3://${BUCKET}/${PREFIX}/${EPOCH}/"
 if [ -z "${SEQ_LIST}" ] || [ "${SEQ_LIST}" == "None" ]; then
-  echo "ERROR: no backup found in s3://${BUCKET}/${PREFIX}/${EPOCH}/" >&2
-  exit 1
+  die 1 "ERROR: no backup found in s3://${BUCKET}/${PREFIX}/${EPOCH}/"
 fi
 
 mapfile -t SEQ_PREFIXES < <(printf '%s\n' "${SEQ_LIST}" | LC_ALL=C sort)
