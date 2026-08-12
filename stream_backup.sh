@@ -32,11 +32,10 @@ BACKUP_OK=false
 HOUSEKEEPING_FAILED=false
 DELETE_PREVIOUS=false
 CHUNK_SIZE="512M"
-MBUFFER_SIZE="512M"
 SOURCE_EPOCH=""
 SNAPSHOT_FROM_OTHER_EPOCH=false
 
-OPTSTRING=":r:b:p:e:c:s:B:S:m:d"
+OPTSTRING=":r:b:p:e:c:s:B:S:d"
 
 while getopts "${OPTSTRING}" opt; do
   case ${opt} in
@@ -71,10 +70,6 @@ while getopts "${OPTSTRING}" opt; do
     S)
       echo "Chunks size: ${OPTARG}"
       CHUNK_SIZE=${OPTARG}
-      ;;
-    m)
-      echo "Buffer size: ${OPTARG}"
-      MBUFFER_SIZE=${OPTARG}
       ;;
     d) 
       echo "Will delete previous snapshot in the same epoch"
@@ -113,9 +108,6 @@ Usage:
                 backups into epochs of different periodicity
   [-S size]   : size of chunks to send to S3. Default to 512M
                 K,M,G suffixes are supported
-  [-m size]   : how much of the stream to hold in memory while
-                uploading. Default to 512M, K,M,G suffixes are
-                supported
   [-d]        : when the upload succeeds, delete the older snapshot
                 defaults to keep the old snapshot. Does not delete
                 the previous snapshot if it is in a different epoch
@@ -275,7 +267,7 @@ export RECIPIENTS_FILE S3_SEQ_URL SCLASS EXPECTED_SIZE
 # to stderr, so its stderr goes to a file and is shown only on failure.
 if ! btrfs send "${SEND_ARGS[@]}" 2>"${SEND_LOG}" \
 	| lz4 \
-	| mbuffer -m "${MBUFFER_SIZE}" -q \
+	| mbuffer -m 512M -q \
 	| SHELL="${SPLIT_SHELL}" split -b "${CHUNK_SIZE}" --suffix-length 4 --filter \
 	'set -o pipefail
 	 age -R "${RECIPIENTS_FILE}" \

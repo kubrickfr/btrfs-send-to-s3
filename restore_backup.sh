@@ -21,9 +21,8 @@ function die () {
 }
 
 DELETE_PREVIOUS=false
-MBUFFER_SIZE="1G"
 
-OPTSTRING=":b:p:e:i:s:m:d"
+OPTSTRING=":b:p:e:i:s:d"
 
 while getopts "${OPTSTRING}" opt; do
   case ${opt} in
@@ -46,10 +45,6 @@ while getopts "${OPTSTRING}" opt; do
     s)
       echo "Restore path: ${OPTARG}"
       DEST=${OPTARG}
-      ;;
-    m)
-      echo "Buffer size: ${OPTARG}"
-      MBUFFER_SIZE=${OPTARG}
       ;;
     d) 
       echo "Delete all restored snapshots but the last one"
@@ -76,9 +71,6 @@ Usage:
   -p prefix   : a prefix to use in that bucket
   -e epoch    : epoch of the backup we want to restore
   -s path     : BTRFS path were to restore the backup
-  [-m size]   : how much of the stream to hold in memory while
-                restoring. Default to 1G, K,M,G suffixes are
-                supported
   [-d]        : after restoring each incremental backup, delete
                 the one it's based on to save space, thus
                 keeping only the last version
@@ -213,7 +205,7 @@ for SEQ_PREFIX in "${SEQ_PREFIXES[@]}"; do
   fi
 
   echo "Restoring ${SEQ_PREFIX}"
-  fetch_chunks "${SEQ_PREFIX}" | mbuffer -m "${MBUFFER_SIZE}" -q | lz4 -d | btrfs receive "${DEST}"
+  fetch_chunks "${SEQ_PREFIX}" | mbuffer -m 1G -q | lz4 -d | btrfs receive "${DEST}"
   STATUS=("${PIPESTATUS[@]}")
 
   if [ "${STATUS[0]}" -ne 0 ] || [ "${STATUS[1]}" -ne 0 ] \
