@@ -748,6 +748,17 @@ test_an_archived_chunk_is_reported_as_such () {
   return 0
 }
 
+# A transient head-object failure must not be read as "end of the sequence":
+# that would feed a silently truncated stream to btrfs receive.
+test_a_failed_chunk_check_stops_the_restore () {
+  backup -c STANDARD -e first || { fail "the first backup failed"; return 1; }
+  mkdir -p "${WORK}/dest"
+
+  AWS_HEAD_ERROR=xaaaa restore -e first -s "${WORK}/dest"
+  assert_status "$?" 2 || return 1
+  return 0
+}
+
 test_a_failed_listing_is_an_error () {
   mkdir -p "${WORK}/dest"
   AWS_LIST_FAIL=1 restore -e first -s "${WORK}/dest"
@@ -842,6 +853,7 @@ echo "Running the restore failure tests"
 run_test "a failed receive stops the restore"                      test_a_failed_receive_stops_the_restore
 run_test "a chunk that will not decrypt stops the restore"         test_a_chunk_that_will_not_decrypt_stops_the_restore
 run_test "an archived chunk is reported as such"                   test_an_archived_chunk_is_reported_as_such
+run_test "a failed chunk check stops the restore"                  test_a_failed_chunk_check_stops_the_restore
 run_test "a failed listing is an error"                            test_a_failed_listing_is_an_error
 run_test "an empty epoch is an error"                              test_an_empty_epoch_is_an_error
 run_test "restoring nothing at all is an error"                    test_restoring_nothing_at_all_is_an_error

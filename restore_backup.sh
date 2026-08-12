@@ -99,85 +99,38 @@ trap 'on_signal INT' INT
 trap 'on_signal TERM' TERM
 trap 'on_signal HUP' HUP
 
-# Whether a chunk can be read right now: present, missing, archived or error.
+# Writes the decrypted chunks of one sequence to stdout, in order, stopping at
+# the first name that does not exist: the chunk names are generated, not
+# listed. 0: the whole sequence, 1: something failed, 4: still in Glacier.
 # head-object answers 200 for an object that is in Glacier and has not been
-# restored to S3 Standard, so the storage class has to be looked at to tell
-# "not there" from "not there yet".
-function chunk_state () {
-  local key=$1
-  local out status class restore
-
-  out=$(aws s3api head-object --bucket "${BUCKET}" --key "${key}" \
-          --query '[StorageClass,Restore]' --output text 2>&1)
-  status=$?
-
-  if [ "${status}" -ne 0 ]; then
-    case ${out} in
-      *"(404)"*|*"Not Found"*)
-        printf 'missing\n'
-        ;;
-      *)
-        printf '%s\n' "${out}" >&2
-        printf 'error\n'
-        ;;
-    esac
-    return 0
-  fi
-
-  read -r class restore <<<"${out}"
-
-  case ${class} in
-    GLACIER|DEEP_ARCHIVE)
-      case ${restore} in
-        *'ongoing-request="false"'*) printf 'present\n' ;;
-        *)                           printf 'archived\n' ;;
-      esac
-      ;;
-    *)
-      printf 'present\n'
-      ;;
-  esac
-}
-
-# Writes the decrypted chunks of one sequence to stdout, in order.
-# 0: the whole sequence, 1: something failed, 4: still in Glacier.
+# restored to S3 Standard, so the storage class tells "not there" from "not
+# there yet".
 function fetch_chunks () {
-  local seq_prefix=$1
-  local key state
-  local -a status
+  local key head class restore
 
-  for key in "${seq_prefix}"x{a..z}{a..z}{a..z}{a..z}; do
-    state=$(chunk_state "${key}")
+  for key in "$1"x{a..z}{a..z}{a..z}{a..z}; do
+    if ! head=$(aws s3api head-object --bucket "${BUCKET}" --key "${key}" \
+                  --query '[StorageClass,Restore]' --output text 2>&1); then
+      case ${head} in
+        *"(404)"*|*"Not Found"*) return 0 ;;
+      esac
+      echo "ERROR: could not tell whether ${key} exists: ${head}" >&2
+      return 1
+    fi
 
-    case ${state} in
-      missing)
-        # The end of the sequence: the chunk names are generated, not listed.
-        return 0
-        ;;
-      archived)
-        echo "ERROR: ${key} is still in Glacier or Deep Archive." >&2
-        echo "       Restore the objects under ${seq_prefix} to S3 Standard" >&2
-        echo "       first (see examples/README.md), then run this again." >&2
-        return 4
-        ;;
-      error)
-        echo "ERROR: could not tell whether ${key} exists, stopping rather than" >&2
-        echo "       feeding btrfs receive a stream that stops halfway." >&2
-        return 1
-        ;;
-    esac
+    read -r class restore <<<"${head}"
+    if [[ "${class}" == @(GLACIER|DEEP_ARCHIVE) && "${restore}" != *'ongoing-request="false"'* ]]; then
+      echo "ERROR: ${key} is still in Glacier or Deep Archive; restore it to S3 Standard first (see examples/README.md)" >&2
+      return 4
+    fi
 
-    aws s3 cp "s3://${BUCKET}/${key}" - | age -d -i "${IDENTITY_FILE}"
-    status=("${PIPESTATUS[@]}")
-
-    if [ "${status[0]}" -ne 0 ] || [ "${status[1]}" -ne 0 ]; then
-      echo "ERROR: chunk ${key} could not be read" \
-           "(aws=${status[0]} age=${status[1]})" >&2
+    if ! aws s3 cp "s3://${BUCKET}/${key}" - | age -d -i "${IDENTITY_FILE}"; then
+      echo "ERROR: chunk ${key} could not be read (aws=${PIPESTATUS[0]} age=${PIPESTATUS[1]})" >&2
       return 1
     fi
   done
 
-  echo "ERROR: ${seq_prefix} holds more chunks than the naming scheme allows" >&2
+  echo "ERROR: $1 holds more chunks than the naming scheme allows" >&2
   return 1
 }
 
@@ -205,27 +158,16 @@ for SEQ_PREFIX in "${SEQ_PREFIXES[@]}"; do
   fi
 
   echo "Restoring ${SEQ_PREFIX}"
-  fetch_chunks "${SEQ_PREFIX}" | mbuffer -m 1G -q | lz4 -d | btrfs receive "${DEST}"
-  STATUS=("${PIPESTATUS[@]}")
-
-  if [ "${STATUS[0]}" -ne 0 ] || [ "${STATUS[1]}" -ne 0 ] \
-     || [ "${STATUS[2]}" -ne 0 ] || [ "${STATUS[3]}" -ne 0 ]; then
-    echo "ERROR: restoring ${SEQ_PREFIX} failed (chunks=${STATUS[0]}" \
-         "mbuffer=${STATUS[1]} lz4=${STATUS[2]} btrfs receive=${STATUS[3]})" >&2
-    echo "       You may have to delete a partly received ${DEST%/}/${SEQ_NAME}" >&2
-    echo "       before trying again." >&2
-    if [ "${STATUS[0]}" -eq 4 ]; then
-      EXIT_CODE=4
-    else
-      EXIT_CODE=2
-    fi
-    # Every later sequence is an increment on this one, so there is no point
-    # carrying on.
+  if ! fetch_chunks "${SEQ_PREFIX}" | mbuffer -m 1G -q | lz4 -d | btrfs receive "${DEST}"; then
+    STATUS=("${PIPESTATUS[@]}")
+    echo "ERROR: restoring ${SEQ_PREFIX} failed (chunks=${STATUS[0]} mbuffer=${STATUS[1]} lz4=${STATUS[2]} btrfs receive=${STATUS[3]})" >&2
+    echo "       You may have to delete a partly received ${DEST%/}/${SEQ_NAME} before trying again." >&2
+    [ "${STATUS[0]}" -eq 4 ] && EXIT_CODE=4 || EXIT_CODE=2
+    # Every later sequence is an increment on this one.
     break
   fi
 
-  # The next snapshot in the chain is on disk, so the one it was built from can
-  # go.
+  # The next link of the chain is on disk, so the one it was built from can go.
   if [ "${DELETE_PREVIOUS}" == true ] && [ -n "${RESTORED_SEQ}" ]; then
     echo "Deleting previous snapshot ${DEST%/}/${RESTORED_SEQ}"
     btrfs subvolume delete "${DEST%/}/${RESTORED_SEQ}" \
