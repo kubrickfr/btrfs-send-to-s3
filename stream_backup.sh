@@ -150,27 +150,15 @@ function on_signal () {
   exit 2
 }
 
-# Name of the newest snapshot in a snapshot directory, or nothing if it holds
-# none. Our snapshots are named after the second they were taken in, so anything
-# that is not a plain number was not put there by this script.
+# Name of the newest snapshot in a snapshot directory, or nothing. Our
+# snapshots are named after the second they were taken in, so anything that is
+# not a plain number was not put there by this script.
 function latest_snapshot () {
-  local dir=$1
-  local path name newest=""
-
-  [ -d "${dir}" ] || return 0
-
-  for path in "${dir}"/*; do
-    name=${path##*/}
-    case ${name} in
-      ''|*[!0-9]*) continue ;;
-    esac
-    btrfs subvolume show "${path}" >/dev/null 2>&1 || continue
-    if [ -z "${newest}" ] || [ "${name}" -gt "${newest}" ]; then
-      newest=${name}
-    fi
-  done
-
-  printf '%s\n' "${newest}"
+  local path
+  for path in "$1"/*; do
+    path=${path##*/}
+    [[ "${path}" == +([0-9]) ]] && printf '%s\n' "${path}"
+  done | sort -n | tail -n 1
 }
 
 # One run at a time per subvolume, and per subvolume rather than per epoch: with
