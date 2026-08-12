@@ -158,25 +158,6 @@ function on_signal () {
   exit 2
 }
 
-# A size in split's notation as a plain number of bytes, or nothing if it is
-# written in a way we do not recognise.
-function size_to_bytes () {
-  local size=$1
-  local number=${size%[KkMmGgTt]}
-
-  case ${number} in
-    ''|*[!0-9]*) return 0 ;;
-  esac
-
-  case ${size} in
-    *[0-9]) printf '%s\n' "${number}" ;;
-    *[Kk])  printf '%s\n' "$(( number * 1024 ))" ;;
-    *[Mm])  printf '%s\n' "$(( number * 1024 ** 2 ))" ;;
-    *[Gg])  printf '%s\n' "$(( number * 1024 ** 3 ))" ;;
-    *[Tt])  printf '%s\n' "$(( number * 1024 ** 4 ))" ;;
-  esac
-}
-
 # Name of the newest snapshot in a snapshot directory, or nothing if it holds
 # none. Our snapshots are named after the second they were taken in, so anything
 # that is not a plain number was not put there by this script.
@@ -284,10 +265,10 @@ btrfs subvolume snapshot -r "${SUBV}" "${SNAPSHOT_STAGED}" || exit 1
 SEND_LOG=$(mktemp) || exit 2
 
 S3_SEQ_URL="s3://${BUCKET}/${PREFIX}/${EPOCH}/${SEQ_SALTED}"
-# Uploading from a stream, the AWS CLI has no idea how much is coming, so it
-# uses 8MiB parts and runs into the 10000 part limit a little under 78GiB.
-# Telling it how big a chunk is lets it size the parts accordingly.
-EXPECTED_SIZE=$(size_to_bytes "${CHUNK_SIZE}")
+# Without a size the AWS CLI streams 8MiB parts and hits the 10000 part limit
+# just under 78GiB. split accepts suffixes numfmt does not, so a size that will
+# not parse just leaves the hint unset.
+EXPECTED_SIZE=$(numfmt --from=iec "${CHUNK_SIZE^^}" 2>/dev/null) || EXPECTED_SIZE=""
 export RECIPIENTS_FILE S3_SEQ_URL SCLASS EXPECTED_SIZE
 
 # stdout is the backup itself, and btrfs send writes progress as well as errors

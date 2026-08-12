@@ -376,6 +376,16 @@ test_the_upload_is_told_how_big_a_chunk_is () {
   return 0
 }
 
+# split accepts lowercase suffixes, so the size hint has to cope with them, and
+# a size the parser cannot read must not fail the backup: it just goes unhinted.
+test_a_lowercase_chunk_size_still_works () {
+  backup -c STANDARD -e first -S 512m
+  local status=$?
+  assert_status "${status}" 0 || return 1
+  assert_contains "$(actions)" "EXPECTED_SIZE: 536870912" || return 1
+  return 0
+}
+
 test_nested_subvolumes_are_reported () {
   NESTED_SUBVOLS="ID 256 gen 9 top level 5 path subv/var/lib/docker
 " backup -c STANDARD -e first
@@ -795,6 +805,7 @@ run_test "no arguments prints the usage"                           test_no_argum
 run_test "an unknown subvolume is an error"                        test_unknown_subvolume_is_an_error
 run_test "a listable bucket raises a security warning"             test_warns_when_the_identity_can_list_the_bucket
 run_test "the upload is told how big a chunk is"                   test_the_upload_is_told_how_big_a_chunk_is
+run_test "a lowercase chunk size still works"                      test_a_lowercase_chunk_size_still_works
 run_test "nested subvolumes are reported"                          test_nested_subvolumes_are_reported
 run_test "an unknown option is reported with its name"             test_an_unknown_option_is_reported_with_its_name
 run_test "an option without its argument is reported"              test_an_option_without_its_argument_is_reported
