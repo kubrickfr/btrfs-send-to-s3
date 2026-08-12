@@ -8,8 +8,7 @@ These scripts rely on well known command line tools and the AWS CLI:
 * aws cli
 * mbuffer
 * lz4
-* split
-* sed
+* split, sed, numfmt (all in coreutils except sed)
 * age (or [rage](https://github.com/str4d/rage/) symlinked to `age` binary in PATH)
 * btrfs-tools
 * openssl

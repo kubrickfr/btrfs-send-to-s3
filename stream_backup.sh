@@ -1,11 +1,8 @@
 #!/bin/bash
 #
-# Before anything else: the shebang can be bypassed with "sh stream_backup.sh",
-# and everything below assumes bash, starting with $EUID.
-if [ -z "${BASH_VERSION}" ]; then
-  echo "Please run with bash" >&2
-  exit 3
-fi
+# The shebang can be bypassed with "sh stream_backup.sh", and everything below
+# assumes bash, starting with $EUID.
+[ -n "${BASH_VERSION}" ] || { echo "Please run with bash" >&2; exit 3; }
 
 set -o pipefail
 
@@ -16,29 +13,27 @@ fi
 
 "$(dirname "$0")/check_deps.sh" || exit 3
 
+function die () {
+  local code=$1
+  shift
+  printf '%s\n' "$@" >&2
+  exit "${code}"
+}
+
 # GNU split runs its --filter through $SHELL, which is the login shell of
 # whoever started us and need not even be bash. Pin it to the interpreter
 # running this script so the filter's own error handling behaves predictably.
-SPLIT_SHELL=${BASH}
-if [ ! -x "${SPLIT_SHELL}" ]; then
-  SPLIT_SHELL=$(command -v bash)
-fi
-if [ ! -x "${SPLIT_SHELL}" ]; then
-  echo "command not found: bash (needed by 'split --filter')" >&2
-  exit 3
-fi
+SPLIT_SHELL=${BASH:-$(command -v bash)}
+[ -x "${SPLIT_SHELL}" ] || die 3 "command not found: bash (needed by 'split --filter')"
 
 SEND_LOG=""
 SNAPSHOT_STAGED=""
-BACKUP_OK=false
-HOUSEKEEPING_FAILED=false
 DELETE_PREVIOUS=false
 CHUNK_SIZE="512M"
-MBUFFER_SIZE="512M"
 SOURCE_EPOCH=""
 SNAPSHOT_FROM_OTHER_EPOCH=false
 
-OPTSTRING=":r:b:p:e:c:s:B:S:m:d"
+OPTSTRING=":r:b:p:e:c:s:B:S:d"
 
 while getopts "${OPTSTRING}" opt; do
   case ${opt} in
@@ -74,31 +69,21 @@ while getopts "${OPTSTRING}" opt; do
       echo "Chunks size: ${OPTARG}"
       CHUNK_SIZE=${OPTARG}
       ;;
-    m)
-      echo "Buffer size: ${OPTARG}"
-      MBUFFER_SIZE=${OPTARG}
-      ;;
     d) 
       echo "Will delete previous snapshot in the same epoch"
       DELETE_PREVIOUS=true
       ;;
     :)
-      echo "Option -${OPTARG} needs an argument." >&2
-      exit 1
+      die 1 "Option -${OPTARG} needs an argument."
       ;;
     ?)
-      echo "Invalid option: -${OPTARG}." >&2
-      exit 1
+      die 1 "Invalid option: -${OPTARG}."
       ;;
   esac
 done
 
 shift $((OPTIND - 1))
-
-if [ $# -ne 0 ]; then
-  echo "Unexpected argument: $1" >&2
-  exit 1
-fi
+[ $# -eq 0 ] || die 1 "Unexpected argument: $1"
 
 if [ "" == "$RECIPIENTS_FILE" ] || [ "" == "$BUCKET" ] || [ "" == "$PREFIX" ] || [ "" == "$EPOCH" ] || [ "" == "$SCLASS" ] || [ "" == "$SUBV" ]; then
 cat << EOF
@@ -121,9 +106,6 @@ Usage:
                 backups into epochs of different periodicity
   [-S size]   : size of chunks to send to S3. Default to 512M
                 K,M,G suffixes are supported
-  [-m size]   : how much of the stream to hold in memory while
-                uploading. Default to 512M, K,M,G suffixes are
-                supported
   [-d]        : when the upload succeeds, delete the older snapshot
                 defaults to keep the old snapshot. Does not delete
                 the previous snapshot if it is in a different epoch
@@ -131,33 +113,20 @@ EOF
         exit 1
 fi
 
-# Runs however the script ends, including on a signal. A snapshot that is still
-# staged is one whose upload did not finish, and the next run must not be able
-# to chain from it, so it goes.
+# Runs however the script ends, including on a signal, until the snapshot is
+# promoted. A snapshot still staged is one whose upload did not finish, and the
+# next run must not be able to chain from it, so it goes.
 function on_exit () {
   local status=$?
-
   trap - EXIT ERR INT TERM HUP
-
-  if [ -n "${SEND_LOG}" ]; then
-    rm -f -- "${SEND_LOG}"
+  [ -n "${SEND_LOG}" ] && rm -f -- "${SEND_LOG}"
+  [ "${status}" -ne 0 ] || status=1
+  if [ -n "${SNAPSHOT_STAGED}" ] && [ -e "${SNAPSHOT_STAGED}" ]; then
+    echo "Something went wrong, deleting the snapshot this run created" >&2
+    btrfs subvolume delete "${SNAPSHOT_STAGED}" >&2 \
+      || echo "ERROR: could not delete ${SNAPSHOT_STAGED}, remove it by hand" >&2
+    status=2
   fi
-
-  if [ "${BACKUP_OK}" != true ]; then
-    if [ -n "${SNAPSHOT_STAGED}" ] && [ -e "${SNAPSHOT_STAGED}" ]; then
-      echo "Something went wrong, deleting the snapshot this run created" >&2
-      btrfs subvolume delete "${SNAPSHOT_STAGED}" >&2 \
-        || echo "ERROR: could not delete ${SNAPSHOT_STAGED}, remove it by hand" >&2
-      status=2
-    elif [ "${status}" -eq 0 ]; then
-      status=1
-    fi
-  elif [ "${HOUSEKEEPING_FAILED}" == true ]; then
-    status=4
-  else
-    status=0
-  fi
-
   exit "${status}"
 }
 
@@ -166,46 +135,15 @@ function on_signal () {
   exit 2
 }
 
-# A size in split's notation as a plain number of bytes, or nothing if it is
-# written in a way we do not recognise.
-function size_to_bytes () {
-  local size=$1
-  local number=${size%[KkMmGgTt]}
-
-  case ${number} in
-    ''|*[!0-9]*) return 0 ;;
-  esac
-
-  case ${size} in
-    *[0-9]) printf '%s\n' "${number}" ;;
-    *[Kk])  printf '%s\n' "$(( number * 1024 ))" ;;
-    *[Mm])  printf '%s\n' "$(( number * 1024 ** 2 ))" ;;
-    *[Gg])  printf '%s\n' "$(( number * 1024 ** 3 ))" ;;
-    *[Tt])  printf '%s\n' "$(( number * 1024 ** 4 ))" ;;
-  esac
-}
-
-# Name of the newest snapshot in a snapshot directory, or nothing if it holds
-# none. Our snapshots are named after the second they were taken in, so anything
-# that is not a plain number was not put there by this script.
+# Name of the newest snapshot in a snapshot directory, or nothing. Our
+# snapshots are named after the second they were taken in, so anything that is
+# not a plain number was not put there by this script.
 function latest_snapshot () {
-  local dir=$1
-  local path name newest=""
-
-  [ -d "${dir}" ] || return 0
-
-  for path in "${dir}"/*; do
-    name=${path##*/}
-    case ${name} in
-      ''|*[!0-9]*) continue ;;
-    esac
-    btrfs subvolume show "${path}" >/dev/null 2>&1 || continue
-    if [ -z "${newest}" ] || [ "${name}" -gt "${newest}" ]; then
-      newest=${name}
-    fi
-  done
-
-  printf '%s\n' "${newest}"
+  local path
+  for path in "$1"/*; do
+    path=${path##*/}
+    [[ "${path}" == +([0-9]) ]] && printf '%s\n' "${path}"
+  done | sort -n | tail -n 1
 }
 
 # One run at a time per subvolume, and per subvolume rather than per epoch: with
@@ -213,20 +151,11 @@ function latest_snapshot () {
 # deletes one. The lock is held by the whole process tree, so a run whose upload
 # is stuck still counts as a run in progress.
 LOCK_DIR=/run/lock
-if [ ! -d "${LOCK_DIR}" ] || [ ! -w "${LOCK_DIR}" ]; then
-  LOCK_DIR=${TMPDIR:-/tmp}
-fi
-
+[ -w "${LOCK_DIR}" ] || LOCK_DIR=${TMPDIR:-/tmp}
 LOCK_NAME=${SUBV%/}
-LOCK_FILE=${LOCK_DIR}/stream_backup${LOCK_NAME//\//_}.lock
-
-exec 9>"${LOCK_FILE}" || exit 1
-
-if ! flock -n 9; then
-  echo "ERROR: another stream_backup.sh run is already working on ${SUBV}" >&2
-  echo "       (lock file ${LOCK_FILE}). Refusing to run two at once." >&2
-  exit 1
-fi
+exec 9>"${LOCK_DIR}/stream_backup${LOCK_NAME//\//_}.lock" || exit 1
+flock -n 9 \
+  || die 1 "ERROR: another stream_backup.sh run is already working on ${SUBV}. Refusing to run two at once."
 
 aws s3 ls "s3://${BUCKET}/${PREFIX}" >/dev/null 2>&1 \
   && echo "SECURITY WARNING: current AWS IAM entity is allowed to list bucket contents! This can allow an attacker using the same identity to overwrite files and ruin your backups!" >&2
@@ -234,32 +163,16 @@ aws s3 ls "s3://${BUCKET}/${PREFIX}" >/dev/null 2>&1 \
 SEQ=$(date +%s)
 
 # Salting the file names in S3 is important as to prevent malevolent overwriting
-SALT=$(openssl rand -hex 8)
+SEQ_SALTED=${SEQ}_$(openssl rand -hex 8)
+[ "${SEQ_SALTED}" != "${SEQ}_" ] || die 1 "ERROR: could not generate a random salt for the object names"
 
-if [ -z "${SALT}" ]; then
-  echo "ERROR: could not generate a random salt for the object names" >&2
-  exit 1
-fi
+btrfs subvolume show "${SUBV}" >/dev/null 2>&1 || die 1 "Subvolume not found"
 
-SEQ_SALTED=${SEQ}_${SALT}
-
-if ! btrfs subvolume show "${SUBV}" >/dev/null 2>&1; then
-  echo "Subvolume not found" >&2
-  exit 1
-fi
-
-# Snapshots are not recursive, and neither is the stream: a subvolume nested
-# inside this one arrives as an empty directory. Docker's btrfs driver, snapper
-# and LXD all create them under paths people back up.
-NESTED=$(btrfs subvolume list -o "${SUBV}" 2>/dev/null \
-           | grep -v '/\.stream_backup_' || true)
-
-if [ -n "${NESTED}" ]; then
-  echo "WARNING: ${SUBV} contains nested subvolumes. They will be backed up as" >&2
-  echo "         EMPTY directories, because snapshots do not descend into them." >&2
-  echo "         Back them up separately if you need their contents:" >&2
-  printf '%s\n' "${NESTED}" >&2
-fi
+# Snapshots are not recursive: a subvolume nested inside this one is backed up
+# as an empty directory.
+NESTED=$(btrfs subvolume list -o "${SUBV}" 2>/dev/null | grep -v '/\.stream_backup_' || true)
+[ -z "${NESTED}" ] \
+  || printf 'WARNING: nested subvolumes will be backed up as EMPTY directories:\n%s\n' "${NESTED}" >&2
 
 EPOCH_DIR=${SUBV%/}/.stream_backup_${EPOCH}
 # A snapshot is only moved out of here once its upload has completed, so
@@ -275,22 +188,14 @@ LAST_SNAPSHOT=$(latest_snapshot "${EPOCH_DIR}")
 if [ -z "${LAST_SNAPSHOT}" ] && [ -n "${SOURCE_EPOCH}" ]; then
   PARENT_DIR=${SUBV%/}/.stream_backup_${SOURCE_EPOCH}
   LAST_SNAPSHOT=$(latest_snapshot "${PARENT_DIR}")
-  if [ -z "${LAST_SNAPSHOT}" ]; then
-    echo "ERROR: Neither the current epoch nor the branch epoch has an existing snapshot" >&2
-    exit 1
-  fi
+  [ -n "${LAST_SNAPSHOT}" ] \
+    || die 1 "ERROR: Neither the current epoch nor the branch epoch has an existing snapshot"
   SNAPSHOT_FROM_OTHER_EPOCH=true
 fi
 
-# Restoring replays sequences in the order of these numbers, so a snapshot that
-# sorts before the one it was made from could never be restored.
+# Restoring replays sequences in the order of these numbers.
 if [ -n "${LAST_SNAPSHOT}" ] && [ "${SEQ}" -le "${LAST_SNAPSHOT}" ]; then
-  echo "ERROR: this run's sequence number (${SEQ}) is not newer than the last" >&2
-  echo "       snapshot's (${LAST_SNAPSHOT}). The clock has gone backwards, or" >&2
-  echo "       a backup has already been taken this second. Restoring replays" >&2
-  echo "       sequences in numerical order, so this backup could not be" >&2
-  echo "       restored after its own parent. Fix the clock and run again." >&2
-  exit 1
+  die 1 "ERROR: sequence ${SEQ} is not newer than the last snapshot (${LAST_SNAPSHOT}): a backup ran this second already, or the clock has gone backwards"
 fi
 
 SEND_ARGS=()
@@ -311,16 +216,13 @@ trap 'on_signal TERM' TERM
 trap 'on_signal HUP' HUP
 trap 'exit 1' ERR
 
-if [ -d "${STAGE_DIR}" ]; then
-  for ORPHAN in "${STAGE_DIR}"/*; do
-    [ -e "${ORPHAN}" ] || continue
-    echo "WARNING: ${ORPHAN} was left behind by an interrupted backup." >&2
-    echo "         Its sequence in S3 was never completed and cannot be restored," >&2
-    echo "         so it cannot be used as a parent. Deleting it." >&2
-    btrfs subvolume delete "${ORPHAN}" >&2 \
-      || echo "WARNING: could not delete ${ORPHAN}, remove it by hand" >&2
-  done
-fi
+# Whatever is left in staging was interrupted mid-upload: its sequence has no
+# completion marker, so nothing may ever chain from it.
+for ORPHAN in "${STAGE_DIR}"/*; do
+  [ -e "${ORPHAN}" ] || continue
+  echo "WARNING: deleting ${ORPHAN}, left behind by an interrupted backup" >&2
+  btrfs subvolume delete "${ORPHAN}" >&2 || echo "WARNING: could not delete ${ORPHAN}, remove it by hand" >&2
+done
 
 mkdir -p -- "${STAGE_DIR}"
 btrfs subvolume snapshot -r "${SUBV}" "${SNAPSHOT_STAGED}" || exit 1
@@ -328,17 +230,17 @@ btrfs subvolume snapshot -r "${SUBV}" "${SNAPSHOT_STAGED}" || exit 1
 SEND_LOG=$(mktemp) || exit 2
 
 S3_SEQ_URL="s3://${BUCKET}/${PREFIX}/${EPOCH}/${SEQ_SALTED}"
-# Uploading from a stream, the AWS CLI has no idea how much is coming, so it
-# uses 8MiB parts and runs into the 10000 part limit a little under 78GiB.
-# Telling it how big a chunk is lets it size the parts accordingly.
-EXPECTED_SIZE=$(size_to_bytes "${CHUNK_SIZE}")
+# Without a size the AWS CLI streams 8MiB parts and hits the 10000 part limit
+# just under 78GiB. split accepts suffixes numfmt does not, so a size that will
+# not parse just leaves the hint unset.
+EXPECTED_SIZE=$(numfmt --from=iec "${CHUNK_SIZE^^}" 2>/dev/null) || EXPECTED_SIZE=""
 export RECIPIENTS_FILE S3_SEQ_URL SCLASS EXPECTED_SIZE
 
 # stdout is the backup itself, and btrfs send writes progress as well as errors
 # to stderr, so its stderr goes to a file and is shown only on failure.
 if ! btrfs send "${SEND_ARGS[@]}" 2>"${SEND_LOG}" \
 	| lz4 \
-	| mbuffer -m "${MBUFFER_SIZE}" -q \
+	| mbuffer -m 512M -q \
 	| SHELL="${SPLIT_SHELL}" split -b "${CHUNK_SIZE}" --suffix-length 4 --filter \
 	'set -o pipefail
 	 age -R "${RECIPIENTS_FILE}" \
@@ -358,40 +260,28 @@ SEND_LOG=""
 # We only write the subvolume information to S3 at the end, as a marker of completion of the backup
 # having the subvolume information might help debugging tricky situations.
 SNAPSHOT_INFO=$(btrfs subvolume show "${SNAPSHOT_STAGED}")
+[ -n "${SNAPSHOT_INFO}" ] || die 2 "ERROR: btrfs subvolume show ${SNAPSHOT_STAGED} returned nothing"
 
-if [ -z "${SNAPSHOT_INFO}" ]; then
-  echo "ERROR: btrfs subvolume show ${SNAPSHOT_STAGED} returned nothing" >&2
-  exit 2
-fi
-
-if ! printf '%s\n' "${SNAPSHOT_INFO}" \
-  | age -R "${RECIPIENTS_FILE}" \
-  | aws s3 cp - "${S3_SEQ_URL}/snapshot_info.dat"
-then
-  echo "ERROR: could not upload the completion marker for ${SEQ_SALTED}" >&2
-  exit 2
-fi
+printf '%s\n' "${SNAPSHOT_INFO}" | age -R "${RECIPIENTS_FILE}" | aws s3 cp - "${S3_SEQ_URL}/snapshot_info.dat" \
+  || die 2 "ERROR: could not upload the completion marker for ${SEQ_SALTED}"
 
 # The sequence is complete in S3, so this snapshot is now a valid parent for the
-# next run and can leave the staging directory.
+# next run and can leave the staging directory. The backup is done: from here on
+# nothing may touch it, so the traps come off.
 mv -T -- "${SNAPSHOT_STAGED}" "${NEW_SNAPSHOT}"
-BACKUP_OK=true
-trap - ERR
+trap - EXIT ERR INT TERM HUP
 rmdir -- "${STAGE_DIR}" 2>/dev/null
 
 # We delete the snapshot from which we made an incremental backup:
 # * If the user asked for it
 # * If there is a previous snapshot in the first place
 # * If the snapshot is not from another epoch
-# The backup is already safe in S3 by now, so failing here is not fatal.
+# The backup is already safe in S3 by now, so failing here is not a failed
+# backup: exit code 4.
 if     [ "${DELETE_PREVIOUS}" == true ] \
     && [ -n "${LAST_SNAPSHOT}" ] \
     && [ "${SNAPSHOT_FROM_OTHER_EPOCH}" == false ]; then
-  if ! btrfs subvolume delete "${PARENT_PATH}"; then
-    echo "WARNING: the backup completed, but the snapshot it was made from" >&2
-    echo "         (${PARENT_PATH}) could not be deleted. Snapshots will pile" >&2
-    echo "         up until this is dealt with." >&2
-    HOUSEKEEPING_FAILED=true
-  fi
+  btrfs subvolume delete "${PARENT_PATH}" \
+    || die 4 "WARNING: the backup completed and is safe, but ${PARENT_PATH} could not be deleted; snapshots will pile up until this is dealt with"
 fi
 
