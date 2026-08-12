@@ -28,8 +28,6 @@ SPLIT_SHELL=${BASH:-$(command -v bash)}
 
 SEND_LOG=""
 SNAPSHOT_STAGED=""
-BACKUP_OK=false
-HOUSEKEEPING_FAILED=false
 DELETE_PREVIOUS=false
 CHUNK_SIZE="512M"
 SOURCE_EPOCH=""
@@ -115,33 +113,20 @@ EOF
         exit 1
 fi
 
-# Runs however the script ends, including on a signal. A snapshot that is still
-# staged is one whose upload did not finish, and the next run must not be able
-# to chain from it, so it goes.
+# Runs however the script ends, including on a signal, until the snapshot is
+# promoted. A snapshot still staged is one whose upload did not finish, and the
+# next run must not be able to chain from it, so it goes.
 function on_exit () {
   local status=$?
-
   trap - EXIT ERR INT TERM HUP
-
-  if [ -n "${SEND_LOG}" ]; then
-    rm -f -- "${SEND_LOG}"
+  [ -n "${SEND_LOG}" ] && rm -f -- "${SEND_LOG}"
+  [ "${status}" -ne 0 ] || status=1
+  if [ -n "${SNAPSHOT_STAGED}" ] && [ -e "${SNAPSHOT_STAGED}" ]; then
+    echo "Something went wrong, deleting the snapshot this run created" >&2
+    btrfs subvolume delete "${SNAPSHOT_STAGED}" >&2 \
+      || echo "ERROR: could not delete ${SNAPSHOT_STAGED}, remove it by hand" >&2
+    status=2
   fi
-
-  if [ "${BACKUP_OK}" != true ]; then
-    if [ -n "${SNAPSHOT_STAGED}" ] && [ -e "${SNAPSHOT_STAGED}" ]; then
-      echo "Something went wrong, deleting the snapshot this run created" >&2
-      btrfs subvolume delete "${SNAPSHOT_STAGED}" >&2 \
-        || echo "ERROR: could not delete ${SNAPSHOT_STAGED}, remove it by hand" >&2
-      status=2
-    elif [ "${status}" -eq 0 ]; then
-      status=1
-    fi
-  elif [ "${HOUSEKEEPING_FAILED}" == true ]; then
-    status=4
-  else
-    status=0
-  fi
-
   exit "${status}"
 }
 
@@ -281,25 +266,22 @@ printf '%s\n' "${SNAPSHOT_INFO}" | age -R "${RECIPIENTS_FILE}" | aws s3 cp - "${
   || die 2 "ERROR: could not upload the completion marker for ${SEQ_SALTED}"
 
 # The sequence is complete in S3, so this snapshot is now a valid parent for the
-# next run and can leave the staging directory.
+# next run and can leave the staging directory. The backup is done: from here on
+# nothing may touch it, so the traps come off.
 mv -T -- "${SNAPSHOT_STAGED}" "${NEW_SNAPSHOT}"
-BACKUP_OK=true
-trap - ERR
+trap - EXIT ERR INT TERM HUP
 rmdir -- "${STAGE_DIR}" 2>/dev/null
 
 # We delete the snapshot from which we made an incremental backup:
 # * If the user asked for it
 # * If there is a previous snapshot in the first place
 # * If the snapshot is not from another epoch
-# The backup is already safe in S3 by now, so failing here is not fatal.
+# The backup is already safe in S3 by now, so failing here is not a failed
+# backup: exit code 4.
 if     [ "${DELETE_PREVIOUS}" == true ] \
     && [ -n "${LAST_SNAPSHOT}" ] \
     && [ "${SNAPSHOT_FROM_OTHER_EPOCH}" == false ]; then
-  if ! btrfs subvolume delete "${PARENT_PATH}"; then
-    echo "WARNING: the backup completed, but the snapshot it was made from" >&2
-    echo "         (${PARENT_PATH}) could not be deleted. Snapshots will pile" >&2
-    echo "         up until this is dealt with." >&2
-    HOUSEKEEPING_FAILED=true
-  fi
+  btrfs subvolume delete "${PARENT_PATH}" \
+    || die 4 "WARNING: the backup completed and is safe, but ${PARENT_PATH} could not be deleted; snapshots will pile up until this is dealt with"
 fi
 
